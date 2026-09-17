@@ -4,7 +4,17 @@ import subprocess
 import pytest
 
 from forge import tools
-from forge.tools import ToolError, call_tool, edit_file, list_dir, read_file, run_shell, write_file
+from forge.tools import (
+    TOOL_SCHEMAS,
+    ToolError,
+    call_tool,
+    edit_file,
+    list_dir,
+    read_file,
+    run_shell,
+    tool_schemas_for,
+    write_file,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -291,3 +301,56 @@ def test_call_tool_run_shell_timeout_returns_error_string(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", fake_run)
     result = call_tool("run_shell", {"command": "sleep 100"}, str(tmp_path), shell_timeout=1)
     assert result.startswith("Error:")
+
+
+# ---------------------------------------------------------------------------
+# plan mode (read-only)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_schemas_for_full_access_returns_everything():
+    assert tool_schemas_for(read_only=False) == TOOL_SCHEMAS
+
+
+def test_tool_schemas_for_read_only_excludes_write_tools():
+    names = {s["function"]["name"] for s in tool_schemas_for(read_only=True)}
+    assert names == {"read_file", "list_dir"}
+
+
+def test_call_tool_read_only_allows_read_file(tmp_path):
+    (tmp_path / "a.txt").write_text("hi")
+    result = call_tool("read_file", {"path": "a.txt"}, str(tmp_path), read_only=True)
+    assert result == "hi"
+
+
+def test_call_tool_read_only_allows_list_dir(tmp_path):
+    (tmp_path / "a.txt").write_text("hi")
+    result = call_tool("list_dir", {}, str(tmp_path), read_only=True)
+    assert "a.txt" in result
+
+
+def test_call_tool_read_only_blocks_write_file(tmp_path):
+    result = call_tool(
+        "write_file", {"path": "a.txt", "content": "x"}, str(tmp_path), read_only=True
+    )
+    assert result.startswith("Error:")
+    assert "plan mode" in result
+    assert not (tmp_path / "a.txt").exists()
+
+
+def test_call_tool_read_only_blocks_edit_file(tmp_path):
+    (tmp_path / "a.txt").write_text("hello")
+    result = call_tool(
+        "edit_file",
+        {"path": "a.txt", "old_str": "hello", "new_str": "bye"},
+        str(tmp_path),
+        read_only=True,
+    )
+    assert result.startswith("Error:")
+    assert (tmp_path / "a.txt").read_text() == "hello"
+
+
+def test_call_tool_read_only_blocks_run_shell(tmp_path):
+    result = call_tool("run_shell", {"command": "echo hi"}, str(tmp_path), read_only=True)
+    assert result.startswith("Error:")
+    assert "plan mode" in result

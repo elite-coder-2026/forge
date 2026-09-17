@@ -25,7 +25,13 @@ Interactive REPL:
 forge -i
 ```
 
-REPL commands: `/help`, `/clear`, `/model <name>`, `/pull <name>`, `/usage`, `/exit` / `/quit`.
+REPL commands: `/help`, `/clear`, `/model <name>`, `/pull <name>`, `/usage`, `/plan`, `/build`, `/exit` / `/quit`.
+
+Pass `--plan` to either mode to start read-only: only `read_file`/`list_dir`
+are available, and the model is told to describe a plan instead of acting.
+`edit_file`/`write_file`/`run_shell` are refused even if the model calls
+them anyway. Use `/build` in the REPL (or drop `--plan`) to get full tool
+access back.
 
 ## Configuration
 

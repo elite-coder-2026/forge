@@ -224,8 +224,27 @@ _DISPATCH = {
     "run_shell": run_shell,
 }
 
+# Tools that only inspect the repo, never change it or run arbitrary code.
+# Plan mode restricts the model to this set.
+READ_ONLY_TOOLS = {"read_file", "list_dir"}
 
-def call_tool(name: str, arguments: dict[str, Any], base_dir: str, shell_timeout: int = 60) -> str:
+
+def tool_schemas_for(read_only: bool) -> list[dict[str, Any]]:
+    """The tool schemas to hand the model: all of them normally, or just
+    the read-only ones in plan mode.
+    """
+    if not read_only:
+        return TOOL_SCHEMAS
+    return [s for s in TOOL_SCHEMAS if s["function"]["name"] in READ_ONLY_TOOLS]
+
+
+def call_tool(
+    name: str,
+    arguments: dict[str, Any],
+    base_dir: str,
+    shell_timeout: int = 60,
+    read_only: bool = False,
+) -> str:
     """Execute a tool by name and return a string result.
 
     This function must never raise. Any failure — expected (`ToolError`,
@@ -233,7 +252,14 @@ def call_tool(name: str, arguments: dict[str, Any], base_dir: str, shell_timeout
     broken symlinks, subprocess failures, anything) — is converted into an
     `"Error: ..."` string so the caller can feed it straight back to the
     model as a tool result instead of crashing the agent loop.
+
+    `read_only=True` (plan mode) is enforced here too, not just by
+    omitting the schema from what's offered to the model — a model can
+    still name a tool that wasn't in its schema list.
     """
+    if read_only and name not in READ_ONLY_TOOLS and name in _DISPATCH:
+        return f"Error: {name!r} is not allowed in plan mode (read-only). Exit plan mode with /build to make changes."
+
     func = _DISPATCH.get(name)
     if func is None:
         return f"Error: unknown tool {name!r}"

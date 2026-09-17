@@ -253,6 +253,80 @@ def test_run_task_connection_error_mid_task_raises_llm_error_not_raw_exception()
         llm.run_task("do a thing", llm.new_history(), client, model="test-model")
 
 
+def test_run_task_plan_mode_offers_only_read_only_tools():
+    seen_tool_names = []
+
+    class RecordingClient(FakeClient):
+        def chat(self, model, messages, tools):
+            seen_tool_names.append({t["function"]["name"] for t in tools})
+            return super().chat(model, messages, tools)
+
+    client = RecordingClient([assistant_response(content="here's the plan")])
+
+    llm.run_task(
+        "do a thing", llm.new_history(), client, model="test-model", read_only=True
+    )
+
+    assert seen_tool_names == [{"read_file", "list_dir"}]
+
+
+def test_run_task_plan_mode_prefixes_task_with_read_only_note():
+    client = FakeClient([assistant_response(content="ok")])
+
+    result = llm.run_task(
+        "refactor the parser", llm.new_history(), client, model="test-model", read_only=True
+    )
+
+    assert "refactor the parser" in result.history[0]["content"]
+    assert "Plan mode" in result.history[0]["content"]
+
+
+def test_run_task_plan_mode_blocks_write_tool_even_if_model_calls_it(tmp_path):
+    client = FakeClient(
+        [
+            assistant_response(
+                tool_calls=[
+                    tool_call(
+                        "write_file",
+                        json.dumps({"path": "a.txt", "content": "should not be written"}),
+                    )
+                ]
+            ),
+            assistant_response(content="done"),
+        ]
+    )
+
+    result = llm.run_task(
+        "write a file",
+        llm.new_history(),
+        client,
+        model="test-model",
+        base_dir=str(tmp_path),
+        read_only=True,
+    )
+
+    assert not (tmp_path / "a.txt").exists()
+    tool_messages = [m for m in result.history if m["role"] == "tool"]
+    assert "plan mode" in tool_messages[0]["content"]
+
+
+def test_run_task_full_mode_offers_all_tools():
+    seen_tool_names = []
+
+    class RecordingClient(FakeClient):
+        def chat(self, model, messages, tools):
+            seen_tool_names.append({t["function"]["name"] for t in tools})
+            return super().chat(model, messages, tools)
+
+    client = RecordingClient([assistant_response(content="done")])
+
+    llm.run_task("do a thing", llm.new_history(), client, model="test-model")
+
+    assert seen_tool_names == [
+        {"read_file", "write_file", "edit_file", "list_dir", "run_shell"}
+    ]
+
+
 def test_run_task_stops_after_max_iterations_without_raising():
     responses = [
         assistant_response(tool_calls=[tool_call("read_file", json.dumps({"path": "a.txt"}))])

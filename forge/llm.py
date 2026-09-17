@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .tools import TOOL_SCHEMAS, call_tool
+from .tools import call_tool, tool_schemas_for
 
 
 class LLMError(Exception):
@@ -199,19 +199,33 @@ def run_task(
     shell_timeout: int = 60,
     max_iterations: int = 25,
     usage_file: str | None = None,
+    read_only: bool = False,
 ) -> TaskResult:
     """Run one task to completion against `client` (an object exposing a
     `.chat(model=, messages=, tools=)` method — an `ollama.Client` in
     production, a stub/mock in tests).
+
+    `read_only=True` is plan mode: the model is only offered read-only
+    tools (`read_file`, `list_dir`) and is told to produce a plan instead
+    of acting. `call_tool` also refuses write/shell tools defensively, in
+    case the model calls one anyway despite it not being offered.
     """
     messages = list(history)
-    messages.append({"role": "user", "content": task})
+    task_content = (
+        f"[Plan mode: read-only. Investigate and describe a plan; do not "
+        f"attempt to modify files or run commands — those tools are "
+        f"unavailable right now.]\n\n{task}"
+        if read_only
+        else task
+    )
+    messages.append({"role": "user", "content": task_content})
 
+    tools = tool_schemas_for(read_only)
     last_content = ""
 
     for iteration in range(max_iterations):
         try:
-            response = client.chat(model=model, messages=messages, tools=TOOL_SCHEMAS)
+            response = client.chat(model=model, messages=messages, tools=tools)
         except Exception as e:
             raise LLMError(f"Model backend call failed: {type(e).__name__}: {e}") from e
 
@@ -245,7 +259,9 @@ def run_task(
                 if parse_error is not None:
                     result = f"Error: {parse_error}"
                 else:
-                    result = call_tool(name, arguments, base_dir, shell_timeout=shell_timeout)
+                    result = call_tool(
+                        name, arguments, base_dir, shell_timeout=shell_timeout, read_only=read_only
+                    )
 
             messages.append(
                 {

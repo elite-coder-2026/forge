@@ -29,6 +29,8 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /plan            Enter plan mode: read-only tools only, no edits or shell commands.
+  /build           Exit plan mode: full tool access again.
   /exit, /quit     Exit the REPL.
 Anything else is sent to the model as a task."""
 
@@ -42,6 +44,7 @@ class REPLState:
     config: Config
     client: Any
     history: list[dict[str, Any]] = field(default_factory=llm.new_history)
+    plan_mode: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +57,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=None, help="Override the model to use for this run.")
     parser.add_argument("--host", default=None, help="Override the Ollama host to use for this run.")
     parser.add_argument("-i", "--interactive", action="store_true", help="Start an interactive REPL.")
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
     return parser
 
 
@@ -113,6 +121,14 @@ def handle_slash_command(line: str, state: REPLState) -> str:
     if name == "/usage":
         return _format_usage(state.config)
 
+    if name == "/plan":
+        state.plan_mode = True
+        return "Entered plan mode: read-only tools only. /build to exit."
+
+    if name == "/build":
+        state.plan_mode = False
+        return "Exited plan mode: full tool access restored."
+
     if name == "/help":
         return HELP_TEXT
 
@@ -164,13 +180,15 @@ def _format_usage(config: Config) -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_repl(config: Config, client: Any) -> None:
-    state = REPLState(config=config, client=client)
+def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
+    state = REPLState(config=config, client=client, plan_mode=plan_mode)
     print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
+    if state.plan_mode:
+        print("Starting in plan mode (read-only). /build to exit.")
 
     while True:
         try:
-            line = input("> ")
+            line = input(_repl_prompt(state))
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -197,6 +215,7 @@ def run_repl(config: Config, client: Any) -> None:
                 shell_timeout=state.config.shell_timeout,
                 max_iterations=state.config.max_iterations,
                 usage_file=state.config.usage_file,
+                read_only=state.plan_mode,
             )
         except llm.LLMError as e:
             print(f"Error: {e}")
@@ -206,7 +225,11 @@ def run_repl(config: Config, client: Any) -> None:
         print(result.content)
 
 
-def run_once(task: str, config: Config, client: Any) -> int:
+def _repl_prompt(state: REPLState) -> str:
+    return "[plan] > " if state.plan_mode else "> "
+
+
+def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) -> int:
     try:
         result = llm.run_task(
             task,
@@ -217,6 +240,7 @@ def run_once(task: str, config: Config, client: Any) -> int:
             shell_timeout=config.shell_timeout,
             max_iterations=config.max_iterations,
             usage_file=config.usage_file,
+            read_only=plan_mode,
         )
     except llm.LLMError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -239,10 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     client = ollama.Client(host=config.host)
 
     if args.interactive or task is None:
-        run_repl(config, client)
+        run_repl(config, client, plan_mode=args.plan)
         return 0
 
-    return run_once(task, config, client)
+    return run_once(task, config, client, plan_mode=args.plan)
 
 
 if __name__ == "__main__":

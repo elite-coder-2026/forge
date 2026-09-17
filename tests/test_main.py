@@ -68,6 +68,17 @@ def test_parse_args_dash_prefixed_multi_word_task():
     assert task == "-fix the bug please"
 
 
+def test_parse_args_plan_flag_recognized_not_swallowed_into_task():
+    args, task = parse_args(["--plan", "investigate", "the", "bug"])
+    assert args.plan is True
+    assert task == "investigate the bug"
+
+
+def test_parse_args_plan_flag_defaults_false():
+    args, task = parse_args(["fix", "it"])
+    assert args.plan is False
+
+
 # ---------------------------------------------------------------------------
 # handle_slash_command
 # ---------------------------------------------------------------------------
@@ -127,6 +138,8 @@ def test_slash_help_returns_help_text():
     assert "/clear" in output
     assert "/model" in output
     assert "/pull" in output
+    assert "/plan" in output
+    assert "/build" in output
 
 
 def test_slash_usage_reports_zero_before_any_task(tmp_path):
@@ -168,6 +181,22 @@ def test_slash_usage_all_time_survives_session_reset(tmp_path):
     assert "This session" in output
     assert "calls: 0" in output.split("All-time")[0]
     assert "prompt: 100" in output
+
+
+def test_slash_plan_enters_plan_mode():
+    state = make_state()
+    assert state.plan_mode is False
+    output = handle_slash_command("/plan", state)
+    assert state.plan_mode is True
+    assert "plan mode" in output.lower()
+
+
+def test_slash_build_exits_plan_mode():
+    state = make_state()
+    state.plan_mode = True
+    output = handle_slash_command("/build", state)
+    assert state.plan_mode is False
+    assert "plan mode" in output.lower()
 
 
 def test_slash_pull_with_no_argument_does_not_crash():
@@ -245,6 +274,35 @@ def test_run_repl_runs_task_and_exits_cleanly(monkeypatch, capsys):
     assert "did: hello there" in out
 
 
+def test_run_repl_plan_command_puts_subsequent_task_in_read_only_mode(monkeypatch, capsys):
+    inputs = iter(["/plan", "look around", "/build", "make changes", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    seen_read_only = []
+
+    def fake_run_task(task, history, client, model, **kwargs):
+        seen_read_only.append(kwargs.get("read_only"))
+        return llm.TaskResult(content="ok", history=history, iterations=1)
+
+    monkeypatch.setattr(main_module.llm, "run_task", fake_run_task)
+
+    config = Config(model="test-model")
+    main_module.run_repl(config, client=object())
+
+    assert seen_read_only == [True, False]
+
+
+def test_run_repl_starts_in_plan_mode_when_requested(monkeypatch, capsys):
+    inputs = iter(["/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    config = Config(model="test-model")
+    main_module.run_repl(config, client=object(), plan_mode=True)
+
+    out = capsys.readouterr().out
+    assert "plan mode" in out.lower()
+
+
 def test_run_repl_model_switch_affects_subsequent_task(monkeypatch, capsys):
     inputs = iter(["/model llama3", "go", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
@@ -287,3 +345,38 @@ def test_run_repl_handles_eof_gracefully(monkeypatch, capsys):
 
     config = Config(model="test-model")
     main_module.run_repl(config, client=object())  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# run_once
+# ---------------------------------------------------------------------------
+
+
+def test_run_once_passes_plan_mode_through(monkeypatch, capsys):
+    seen_read_only = []
+
+    def fake_run_task(task, history, client, model, **kwargs):
+        seen_read_only.append(kwargs.get("read_only"))
+        return llm.TaskResult(content="ok", history=history, iterations=1)
+
+    monkeypatch.setattr(main_module.llm, "run_task", fake_run_task)
+
+    config = Config(model="test-model")
+    main_module.run_once("investigate", config, client=object(), plan_mode=True)
+
+    assert seen_read_only == [True]
+
+
+def test_run_once_defaults_to_full_access(monkeypatch, capsys):
+    seen_read_only = []
+
+    def fake_run_task(task, history, client, model, **kwargs):
+        seen_read_only.append(kwargs.get("read_only"))
+        return llm.TaskResult(content="ok", history=history, iterations=1)
+
+    monkeypatch.setattr(main_module.llm, "run_task", fake_run_task)
+
+    config = Config(model="test-model")
+    main_module.run_once("fix it", config, client=object())
+
+    assert seen_read_only == [False]
