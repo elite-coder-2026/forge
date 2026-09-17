@@ -126,6 +126,26 @@ def test_slash_help_returns_help_text():
     assert "/pull" in output
 
 
+def test_slash_usage_reports_zero_before_any_task():
+    llm.reset_usage()
+    state = make_state()
+    output = handle_slash_command("/usage", state)
+    assert "Calls: 0" in output
+    assert "Total: 0" in output
+
+
+def test_slash_usage_reports_accumulated_counts():
+    llm.reset_usage()
+    llm._record_usage({"prompt_eval_count": 10, "eval_count": 4})
+    state = make_state()
+    output = handle_slash_command("/usage", state)
+    assert "Calls: 1" in output
+    assert "Prompt tokens: 10" in output
+    assert "Completion tokens: 4" in output
+    assert "Total: 14" in output
+    llm.reset_usage()
+
+
 def test_slash_pull_with_no_argument_does_not_crash():
     state = make_state()
     output = handle_slash_command("/pull", state)

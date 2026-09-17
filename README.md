@@ -25,7 +25,7 @@ Interactive REPL:
 forge -i
 ```
 
-REPL commands: `/help`, `/clear`, `/model <name>`, `/pull <name>`, `/exit` / `/quit`.
+REPL commands: `/help`, `/clear`, `/model <name>`, `/pull <name>`, `/usage`, `/exit` / `/quit`.
 
 ## Configuration
 

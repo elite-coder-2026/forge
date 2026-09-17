@@ -28,6 +28,7 @@ Commands:
   /clear           Clear the conversation history (starts a new session).
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
+  /usage           Show cumulative token usage for this process.
   /exit, /quit     Exit the REPL.
 Anything else is sent to the model as a task."""
 
@@ -108,6 +109,15 @@ def handle_slash_command(line: str, state: REPLState) -> str:
         if not arg_str:
             return "Usage: /pull <name>"
         return _pull_model(arg_str)
+
+    if name == "/usage":
+        usage = llm.get_usage()
+        return (
+            f"Calls: {usage['calls']}  "
+            f"Prompt tokens: {usage['prompt_tokens']}  "
+            f"Completion tokens: {usage['completion_tokens']}  "
+            f"Total: {usage['prompt_tokens'] + usage['completion_tokens']}"
+        )
 
     if name == "/help":
         return HELP_TEXT
