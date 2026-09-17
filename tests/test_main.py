@@ -73,8 +73,11 @@ def test_parse_args_dash_prefixed_multi_word_task():
 # ---------------------------------------------------------------------------
 
 
-def make_state():
-    return REPLState(config=Config(model="initial-model"), client=object(), history=[{"role": "user", "content": "hi"}])
+def make_state(usage_file=None):
+    config = Config(model="initial-model")
+    if usage_file is not None:
+        config.usage_file = usage_file
+    return REPLState(config=config, client=object(), history=[{"role": "user", "content": "hi"}])
 
 
 def test_slash_clear_resets_history():
@@ -126,24 +129,45 @@ def test_slash_help_returns_help_text():
     assert "/pull" in output
 
 
-def test_slash_usage_reports_zero_before_any_task():
+def test_slash_usage_reports_zero_before_any_task(tmp_path):
     llm.reset_usage()
-    state = make_state()
+    state = make_state(usage_file=str(tmp_path / "usage.json"))
     output = handle_slash_command("/usage", state)
-    assert "Calls: 0" in output
-    assert "Total: 0" in output
+    assert "calls: 0" in output
+    assert "prompt: 0" in output
 
 
-def test_slash_usage_reports_accumulated_counts():
+def test_slash_usage_reports_session_and_all_time_counts(tmp_path):
     llm.reset_usage()
-    llm._record_usage({"prompt_eval_count": 10, "eval_count": 4})
-    state = make_state()
+    usage_file = str(tmp_path / "usage.json")
+    llm._record_usage({"prompt_eval_count": 10, "eval_count": 4}, usage_file)
+
+    state = make_state(usage_file=usage_file)
     output = handle_slash_command("/usage", state)
-    assert "Calls: 1" in output
-    assert "Prompt tokens: 10" in output
-    assert "Completion tokens: 4" in output
-    assert "Total: 14" in output
+
+    assert "This session" in output
+    assert "prompt: 10" in output
+    assert "completion: 4" in output
+    assert "All-time" in output
+    assert "Estimated money saved" in output
     llm.reset_usage()
+
+
+def test_slash_usage_all_time_survives_session_reset(tmp_path):
+    """The whole point of the persisted total: it must outlive
+    `llm.reset_usage()` (which only clears the in-process counter).
+    """
+    llm.reset_usage()
+    usage_file = str(tmp_path / "usage.json")
+    llm._record_usage({"prompt_eval_count": 100, "eval_count": 50}, usage_file)
+    llm.reset_usage()  # simulates a new process / new session
+
+    state = make_state(usage_file=usage_file)
+    output = handle_slash_command("/usage", state)
+
+    assert "This session" in output
+    assert "calls: 0" in output.split("All-time")[0]
+    assert "prompt: 100" in output
 
 
 def test_slash_pull_with_no_argument_does_not_crash():

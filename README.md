@@ -38,6 +38,15 @@ Environment variables (all optional):
 | `FORGE_MAX_ITERATIONS` | `25` | Max tool-call rounds per task |
 | `FORGE_SHELL_TIMEOUT` | `60` | Seconds before a shell command times out |
 | `FORGE_WORKING_DIR` | `.` | Sandbox root for file/shell tools |
+| `FORGE_USAGE_FILE` | `~/.forge/usage.json` | Where the cross-session running-total token count is stored |
+| `FORGE_PROMPT_PRICE_PER_1M` | `0.30` | $/1M prompt tokens used to estimate savings in `/usage` |
+| `FORGE_COMPLETION_PRICE_PER_1M` | `0.80` | $/1M completion tokens used to estimate savings in `/usage` |
+
+`/usage`'s default $/1M rates are Together AI's published pricing for
+hosting Qwen2.5-Coder — an open-model hosting price, not a frontier-model
+(GPT-4o/Claude/etc.) price, since that's the realistic alternative to
+running it locally. Override via the env vars above if you're comparing
+against a different model or provider.
 
 ## Design notes
 

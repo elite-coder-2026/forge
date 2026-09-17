@@ -11,6 +11,7 @@ system message. The model only ever sees the tool schemas and the task.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -55,13 +56,69 @@ def reset_usage() -> None:
         _usage["calls"] = 0
 
 
-def _record_usage(response: Any) -> None:
+def _record_usage(response: Any, usage_file: str | None = None) -> None:
     prompt = response.get("prompt_eval_count") or 0
     completion = response.get("eval_count") or 0
     with _usage_lock:
         _usage["prompt_tokens"] += prompt
         _usage["completion_tokens"] += completion
         _usage["calls"] += 1
+    if usage_file:
+        _add_to_persisted_usage(usage_file, prompt, completion)
+
+
+# ---------------------------------------------------------------------------
+# Persisted (cross-process, cross-session) usage
+# ---------------------------------------------------------------------------
+#
+# `_usage` above only lives for one process. Since a one-shot `forge
+# "task"` invocation is a whole new process every time, a *running total*
+# has to be file-backed. This is best-effort: a failure to read or write
+# the file never raises — it just means the running total doesn't grow
+# for that call — since token accounting must never be allowed to break
+# an actual task.
+
+_EMPTY_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+
+
+def _load_persisted_usage(path: str) -> dict[str, int]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return dict(_EMPTY_USAGE)
+
+    if not isinstance(data, dict):
+        return dict(_EMPTY_USAGE)
+
+    return {key: int(data.get(key, 0) or 0) for key in _EMPTY_USAGE}
+
+
+def _save_persisted_usage(path: str, usage: dict[str, int]) -> None:
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(usage, f)
+    except OSError:
+        pass
+
+
+def get_persisted_usage(path: str) -> dict[str, int]:
+    return _load_persisted_usage(path)
+
+
+def reset_persisted_usage(path: str) -> None:
+    _save_persisted_usage(path, dict(_EMPTY_USAGE))
+
+
+def _add_to_persisted_usage(path: str, prompt: int, completion: int) -> None:
+    usage = _load_persisted_usage(path)
+    usage["prompt_tokens"] += prompt
+    usage["completion_tokens"] += completion
+    usage["calls"] += 1
+    _save_persisted_usage(path, usage)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +198,7 @@ def run_task(
     base_dir: str = ".",
     shell_timeout: int = 60,
     max_iterations: int = 25,
+    usage_file: str | None = None,
 ) -> TaskResult:
     """Run one task to completion against `client` (an object exposing a
     `.chat(model=, messages=, tools=)` method — an `ollama.Client` in
@@ -160,7 +218,7 @@ def run_task(
         if response is None or "message" not in response:
             raise LLMError("Model backend returned a response with no 'message' field")
 
-        _record_usage(response)
+        _record_usage(response, usage_file)
 
         message = response["message"]
         content = message.get("content") or ""

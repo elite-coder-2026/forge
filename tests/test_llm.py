@@ -304,3 +304,111 @@ def test_reset_usage_zeroes_counters():
 
     llm.reset_usage()
     assert llm.get_usage() == {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+
+
+# ---------------------------------------------------------------------------
+# persisted (cross-session) usage
+# ---------------------------------------------------------------------------
+
+
+def test_persisted_usage_missing_file_reads_as_zero(tmp_path):
+    path = str(tmp_path / "does_not_exist" / "usage.json")
+    assert llm.get_persisted_usage(path) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "calls": 0,
+    }
+
+
+def test_persisted_usage_corrupt_file_reads_as_zero_not_raise(tmp_path):
+    path = tmp_path / "usage.json"
+    path.write_text("{not valid json")
+    assert llm.get_persisted_usage(str(path)) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "calls": 0,
+    }
+
+
+def test_persisted_usage_non_object_json_reads_as_zero_not_raise(tmp_path):
+    path = tmp_path / "usage.json"
+    path.write_text("[1, 2, 3]")
+    assert llm.get_persisted_usage(str(path)) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "calls": 0,
+    }
+
+
+def test_persisted_usage_accumulates_across_separate_processes(tmp_path):
+    """Simulates two separate `forge` invocations against the same
+    usage file — the running total must grow across both.
+    """
+    path = str(tmp_path / "usage.json")
+
+    llm._add_to_persisted_usage(path, prompt=10, completion=5)
+    llm._add_to_persisted_usage(path, prompt=3, completion=2)
+
+    assert llm.get_persisted_usage(path) == {
+        "prompt_tokens": 13,
+        "completion_tokens": 7,
+        "calls": 2,
+    }
+
+
+def test_persisted_usage_creates_parent_directories(tmp_path):
+    path = str(tmp_path / "nested" / "dir" / "usage.json")
+    llm._add_to_persisted_usage(path, prompt=1, completion=1)
+    assert llm.get_persisted_usage(path)["calls"] == 1
+
+
+def test_reset_persisted_usage_zeroes_the_file(tmp_path):
+    path = str(tmp_path / "usage.json")
+    llm._add_to_persisted_usage(path, prompt=10, completion=5)
+    llm.reset_persisted_usage(path)
+    assert llm.get_persisted_usage(path) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "calls": 0,
+    }
+
+
+def test_save_persisted_usage_failure_does_not_raise(monkeypatch, tmp_path):
+    """Persisting usage is best-effort: a write failure (disk full,
+    permission denied, etc.) must not break the task that triggered it.
+    """
+
+    def raising_open(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("builtins.open", raising_open)
+    llm._save_persisted_usage(str(tmp_path / "usage.json"), {"prompt_tokens": 1, "completion_tokens": 1, "calls": 1})  # must not raise
+
+
+def test_run_task_persists_usage_when_usage_file_given(tmp_path):
+    usage_file = str(tmp_path / "usage.json")
+    client = FakeClient(
+        [assistant_response(content="done", prompt_tokens=7, completion_tokens=3)]
+    )
+
+    llm.run_task(
+        "task", llm.new_history(), client, model="test-model", usage_file=usage_file
+    )
+
+    assert llm.get_persisted_usage(usage_file) == {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "calls": 1,
+    }
+
+
+def test_run_task_does_not_touch_disk_when_usage_file_omitted(tmp_path, monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("should not touch disk when usage_file is None")
+
+    monkeypatch.setattr(llm, "_add_to_persisted_usage", fail_if_called)
+
+    client = FakeClient(
+        [assistant_response(content="done", prompt_tokens=7, completion_tokens=3)]
+    )
+    llm.run_task("task", llm.new_history(), client, model="test-model")  # usage_file=None

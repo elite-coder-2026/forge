@@ -28,7 +28,7 @@ Commands:
   /clear           Clear the conversation history (starts a new session).
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
-  /usage           Show cumulative token usage for this process.
+  /usage           Show this session's + all-time token usage and estimated $ saved.
   /exit, /quit     Exit the REPL.
 Anything else is sent to the model as a task."""
 
@@ -111,13 +111,7 @@ def handle_slash_command(line: str, state: REPLState) -> str:
         return _pull_model(arg_str)
 
     if name == "/usage":
-        usage = llm.get_usage()
-        return (
-            f"Calls: {usage['calls']}  "
-            f"Prompt tokens: {usage['prompt_tokens']}  "
-            f"Completion tokens: {usage['completion_tokens']}  "
-            f"Total: {usage['prompt_tokens'] + usage['completion_tokens']}"
-        )
+        return _format_usage(state.config)
 
     if name == "/help":
         return HELP_TEXT
@@ -140,6 +134,29 @@ def _pull_model(model_name: str) -> str:
     if result.returncode != 0:
         return f"Error: 'ollama pull {model_name}' exited with code {result.returncode}"
     return f"Pulled model {model_name!r}"
+
+
+def _estimate_savings(usage: dict[str, int], config: Config) -> float:
+    return (
+        usage["prompt_tokens"] / 1_000_000 * config.prompt_price_per_1m
+        + usage["completion_tokens"] / 1_000_000 * config.completion_price_per_1m
+    )
+
+
+def _format_usage(config: Config) -> str:
+    session = llm.get_usage()
+    all_time = llm.get_persisted_usage(config.usage_file)
+    saved = _estimate_savings(all_time, config)
+
+    return (
+        f"This session — calls: {session['calls']}  "
+        f"prompt: {session['prompt_tokens']}  completion: {session['completion_tokens']}\n"
+        f"All-time (running total)  — calls: {all_time['calls']}  "
+        f"prompt: {all_time['prompt_tokens']}  completion: {all_time['completion_tokens']}\n"
+        f"Estimated money saved vs. paying for hosted {config.model}-class "
+        f"inference (${config.prompt_price_per_1m:.2f}/1M in, "
+        f"${config.completion_price_per_1m:.2f}/1M out): ${saved:.4f}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +196,7 @@ def run_repl(config: Config, client: Any) -> None:
                 base_dir=state.config.working_dir,
                 shell_timeout=state.config.shell_timeout,
                 max_iterations=state.config.max_iterations,
+                usage_file=state.config.usage_file,
             )
         except llm.LLMError as e:
             print(f"Error: {e}")
@@ -198,6 +216,7 @@ def run_once(task: str, config: Config, client: Any) -> int:
             base_dir=config.working_dir,
             shell_timeout=config.shell_timeout,
             max_iterations=config.max_iterations,
+            usage_file=config.usage_file,
         )
     except llm.LLMError as e:
         print(f"Error: {e}", file=sys.stderr)
