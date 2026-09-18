@@ -12,6 +12,7 @@ needed that import, so it's just gone.
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -34,6 +35,7 @@ Commands:
   /budget          Show session token/compute budget (/budget tokens N, /budget minutes N; 0 or off disables).
   /auto [on|off]   Show or toggle automatic model selection (needs a fast model).
   /fast <name>     Set the fast model used for simple tasks (/fast off to clear).
+  /session [list|new <dir> [name]|switch <name>|close <name>]  Work in several project directories at once.
   /undo [N|list|force]  Revert the last N file changes forge made (default 1). Not for shell-made changes.
   /image <path>    Attach image(s) to the next task (screenshot -> code). /image alone lists; /image clear drops them.
   /plan            Enter plan mode: read-only tools only, no edits or shell commands.
@@ -47,6 +49,18 @@ class REPLExit(Exception):
 
 
 @dataclass
+class Workspace:
+    """The named sessions open in one REPL, and which one is active."""
+
+    sessions: dict[str, "REPLState"] = field(default_factory=dict)
+    current: str = ""
+
+    @property
+    def state(self) -> "REPLState":
+        return self.sessions[self.current]
+
+
+@dataclass
 class REPLState:
     config: Config
     client: Any
@@ -56,6 +70,8 @@ class REPLState:
     auto_model: bool = True
     budget: budget.BudgetTracker = field(default_factory=budget.BudgetTracker)
     last_model: str | None = None  # model used for the previous task
+    name: str = "main"
+    workspace: Workspace | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +163,9 @@ def handle_slash_command(line: str, state: REPLState) -> str:
 
     if name == "/budget":
         return _handle_budget_command(arg_str, state)
+
+    if name in ("/session", "/sessions"):
+        return _handle_session_command(arg_str, state)
 
     if name == "/mcp":
         manager = mcp.get_manager()
@@ -267,6 +286,88 @@ def _start_mcp(config: Config, trust_flag: bool) -> None:
         print(f"MCP: connected {', '.join(connected)}", file=sys.stderr)
     for name, error in manager.errors.items():
         print(f"MCP: server {name!r} failed to start: {error}", file=sys.stderr)
+
+
+def _handle_session_command(arg_str: str, state: REPLState) -> str:
+    usage = "Usage: /session [list | new <dir> [name] | switch <name> | close <name>]"
+    workspace = state.workspace
+    if workspace is None:
+        return "Sessions aren't available here."
+    try:
+        parts = shlex.split(arg_str)
+    except ValueError as e:
+        return f"Error: could not parse arguments: {e}"
+    sub = parts[0] if parts else "list"
+
+    if sub == "list" and len(parts) <= 1:
+        lines = []
+        for name, s in workspace.sessions.items():
+            marker = "*" if name == workspace.current else " "
+            extra = ", plan mode" if s.plan_mode else ""
+            lines.append(
+                f"{marker} {name}: {os.path.realpath(s.config.working_dir)} "
+                f"({len(s.history)} messages{extra})"
+            )
+        return "\n".join(lines)
+
+    if sub == "new" and len(parts) in (2, 3):
+        directory = os.path.realpath(
+            os.path.join(state.config.working_dir, os.path.expanduser(parts[1]))
+        )
+        if not os.path.isdir(directory):
+            return f"Error: not a directory: {directory}"
+        for other in workspace.sessions.values():
+            if os.path.realpath(other.config.working_dir) == directory:
+                return f"Error: {directory} is already open as session {other.name!r}"
+
+        name = parts[2] if len(parts) == 3 else (os.path.basename(directory) or "session")
+        if len(parts) == 3 and name in workspace.sessions:
+            return f"Error: a session named {name!r} already exists"
+        base, n = name, 1
+        while name in workspace.sessions:  # only reachable for the derived name
+            n += 1
+            name = f"{base}-{n}"
+
+        try:
+            config = Config.from_env(directory)  # that project's own forge.toml
+        except ConfigError as e:
+            return f"Error: {e}"
+        config.host = state.config.host  # one Ollama server for every session
+
+        opened = REPLState(
+            config=config,
+            client=state.client,
+            budget=state.budget,  # usage totals are process-wide, so is the budget
+            name=name,
+            workspace=workspace,
+        )
+        resumed = session.load(config.session_file)
+        if resumed:
+            opened.history = resumed
+        workspace.sessions[name] = opened
+        workspace.current = name
+        note = f" (resumed {len(resumed)} messages)" if resumed else ""
+        return f"Opened session {name!r} in {directory}{note}. Now working there."
+
+    if sub == "switch" and len(parts) == 2:
+        if parts[1] not in workspace.sessions:
+            return f"Error: no session named {parts[1]!r} (see /session list)"
+        workspace.current = parts[1]
+        return f"Switched to session {parts[1]!r}."
+
+    if sub == "close" and len(parts) == 2:
+        if parts[1] not in workspace.sessions:
+            return f"Error: no session named {parts[1]!r} (see /session list)"
+        if len(workspace.sessions) == 1:
+            return "Error: can't close the only session (use /exit to quit)."
+        del workspace.sessions[parts[1]]
+        message = f"Closed session {parts[1]!r} (its saved history is kept)."
+        if workspace.current == parts[1]:
+            workspace.current = next(iter(workspace.sessions))
+            message += f" Now in {workspace.current!r}."
+        return message
+
+    return usage
 
 
 def _session_totals() -> tuple[int, float]:
@@ -488,6 +589,8 @@ def run_repl(
         pending_images=list(images or []),
         budget=budget.BudgetTracker(config.budget_tokens, config.budget_minutes),
     )
+    workspace = Workspace({state.name: state}, state.name)
+    state.workspace = workspace
     print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
     if state.plan_mode:
         print("Starting in plan mode (read-only). /build to exit.")
@@ -502,6 +605,7 @@ def run_repl(
         print(f"Resumed previous session ({len(resumed)} messages). /clear starts fresh.")
 
     while True:
+        state = workspace.state  # /session commands can change which one is active
         try:
             line = input(_repl_prompt(state))
         except (EOFError, KeyboardInterrupt):
@@ -560,6 +664,9 @@ def run_repl(
 
 
 def _repl_prompt(state: REPLState) -> str:
+    plan = " plan" if state.plan_mode else ""
+    if state.workspace is not None and len(state.workspace.sessions) > 1:
+        return f"[{state.name}{plan}] > "
     return "[plan] > " if state.plan_mode else "> "
 
 

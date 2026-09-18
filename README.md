@@ -150,6 +150,26 @@ files are named, lists, tracebacks), so it costs no extra model call.
   model, and `/model <name>` or `--model` count as an explicit choice and
   turn routing off. Without a fast model, nothing changes.
 
+### Multiple sessions
+
+One REPL can work in several project directories without restarting:
+
+```
+/session new ../api-server     open it (its own forge.toml, history, plan mode)
+/session new ~/web web         ...or give it a name
+/session list                  * marks the active one
+/session switch web
+/session close api-server      its saved history is kept
+```
+
+Each session has its own conversation (saved and resumed per directory),
+plan/build mode, attached images, and `/undo` history, which only reverts
+changes made in that session's directory. The prompt shows the session name
+once more than one is open (`[web] > `). All sessions share the Ollama
+server, the usage totals and the budget. MCP servers and plugins come from
+the directory forge was launched in. Sessions run one at a time (you switch
+between them); they don't work in parallel in the background.
+
 ### Undo
 
 `/undo` in the REPL reverts the last file change forge made: it restores

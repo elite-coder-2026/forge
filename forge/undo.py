@@ -28,15 +28,16 @@ class Entry:
     path: str  # absolute
     before: bytes | None  # None: forge created the file
     after: bytes | None  # what forge left on disk
+    scope: str = ""  # realpath of the project directory that made the change
 
 
 _journal: list[Entry] = []
 _lock = threading.Lock()
 
 
-def record(path: str, before: bytes | None, after: bytes | None) -> None:
+def record(path: str, before: bytes | None, after: bytes | None, scope: str = "") -> None:
     with _lock:
-        _journal.append(Entry(path, before, after))
+        _journal.append(Entry(path, before, after, scope))
         del _journal[:-MAX_ENTRIES]
 
 
@@ -48,6 +49,15 @@ def clear() -> None:
 def count() -> int:
     with _lock:
         return len(_journal)
+
+
+def _scope_of(base_dir: str) -> str:
+    return os.path.realpath(base_dir)
+
+
+def _matches(entry: Entry, scope: str) -> bool:
+    """Entries recorded without a scope belong to every directory."""
+    return not entry.scope or entry.scope == scope
 
 
 def _current(path: str) -> bytes | None:
@@ -70,8 +80,9 @@ def _shown(base_dir: str, path: str) -> str:
 
 def history(base_dir: str, limit: int = 10) -> list[str]:
     """Most recent changes first, one line each."""
+    scope = _scope_of(base_dir)
     with _lock:
-        recent = list(reversed(_journal[-limit:]))
+        recent = [e for e in reversed(_journal) if _matches(e, scope)][:limit]
     lines = []
     for entry in recent:
         action = "created" if entry.before is None else "modified"
@@ -85,13 +96,14 @@ def undo(base_dir: str, n: int = 1, force: bool = False) -> list[str]:
     since forge wrote it, unless `force`.
     """
     results: list[str] = []
+    scope = _scope_of(base_dir)
     for _ in range(n):
         with _lock:
-            if not _journal:
-                if not results:
-                    results.append("Nothing to undo.")
-                break
-            entry = _journal[-1]
+            entry = next((e for e in reversed(_journal) if _matches(e, scope)), None)
+        if entry is None:
+            if not results:
+                results.append("Nothing to undo.")
+            break
 
         shown = _shown(base_dir, entry.path)
         if not force and _current(entry.path) != entry.after:
@@ -115,7 +127,10 @@ def undo(base_dir: str, n: int = 1, force: bool = False) -> list[str]:
             break
 
         with _lock:
-            # Only drop the entry we actually reverted.
-            if _journal and _journal[-1] is entry:
-                _journal.pop()
+            # Drop exactly the entry we reverted (by identity: equal-looking
+            # entries from earlier changes must stay).
+            for i in range(len(_journal) - 1, -1, -1):
+                if _journal[i] is entry:
+                    del _journal[i]
+                    break
     return results

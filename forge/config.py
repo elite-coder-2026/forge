@@ -183,12 +183,15 @@ class Config:
     mcp_servers: dict[str, MCPServerConfig] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls, working_dir: str | None = None) -> "Config":
         """Build a Config from env vars, then `forge.toml`, then defaults.
 
-        Raises `ConfigError` if `forge.toml` is present but invalid.
+        `working_dir` (default: `FORGE_WORKING_DIR`, else `.`) is the project
+        directory whose `forge.toml` is read. Raises `ConfigError` if that
+        file is present but invalid.
         """
-        working_dir = os.environ.get("FORGE_WORKING_DIR", ".")
+        if working_dir is None:
+            working_dir = os.environ.get("FORGE_WORKING_DIR", ".")
         file = load_project_file(working_dir)
 
         def pick(env_name: str, key: str, default: Any, cast: Any = str) -> Any:

@@ -80,7 +80,7 @@ def write_file(base_dir: str, path: str, content: str) -> str:
         os.makedirs(parent, exist_ok=True)
     with open(target, "w", encoding="utf-8") as f:
         f.write(content)
-    undo.record(target, before, _read_bytes(target))
+    undo.record(target, before, _read_bytes(target), scope=os.path.realpath(base_dir))
     return f"Wrote {len(content)} bytes to {path}"
 
 
@@ -105,7 +105,7 @@ def edit_file(base_dir: str, path: str, old_str: str, new_str: str) -> str:
     before = _read_bytes(target)
     with open(target, "w", encoding="utf-8") as f:
         f.write(new_content)
-    undo.record(target, before, _read_bytes(target))
+    undo.record(target, before, _read_bytes(target), scope=os.path.realpath(base_dir))
     return f"Edited {path}"
 
 
