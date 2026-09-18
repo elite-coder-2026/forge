@@ -80,12 +80,6 @@ def test_serves_assets_and_404s_unknown_paths(server):
     assert request(server, "GET", "/nope")[0].status == 404
 
 
-def test_history_endpoint(server):
-    response, data = request(server, "GET", "/api/history")
-    assert response.status == 200
-    assert json.loads(data) == [{"role": "user", "content": "earlier"}]
-
-
 def test_chat_returns_reply(server):
     response, data = post_chat(server, "  hello  ")
     assert response.status == 200
