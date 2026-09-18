@@ -19,7 +19,7 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 - [x] Wire `on_token` into the CLI/REPL so it prints live
 - [x] Ollama-unreachable error handling
 - [x] Git awareness (diff summary / auto-commit)
-- [ ] Config file (`forge.toml`)
+- [x] Config file (`forge.toml`)
 - [x] Persistent session across restarts
 
 ## 🟡 Good to have
