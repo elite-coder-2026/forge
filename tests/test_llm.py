@@ -331,6 +331,7 @@ def test_run_task_full_mode_offers_all_tools():
             "edit_file",
             "list_dir",
             "run_shell",
+            "run_tests",
             "find_definition", "find_references", "hover", "get_diagnostics",
         }
     ]

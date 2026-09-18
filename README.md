@@ -64,6 +64,24 @@ pyright`). forge also finds it in the same virtualenv as forge itself.
 Set `FORGE_LSP_COMMAND` to use a different server command. Without a
 server, the tools return an error telling the model how to install it.
 
+### Running tests
+
+The model has a dedicated `run_tests` tool, separate from `run_shell`. It
+runs your suite (pytest if the project's Python has it, otherwise
+unittest; a project `.venv`/`venv` interpreter is used when present) and
+returns a summary instead of hundreds of lines:
+
+```
+pytest: FAILED: 1 failed, 12 passed in 0.4s (exit code 1)
+Failures:
+  FAILED tests/test_a.py::test_x - assert 1 == 2
+```
+
+It takes an optional `path` (file, directory, or `file::test` id), an
+optional custom `command` (e.g. `npm test`; unrecognized output shows the
+exit code and the tail), and `verbose` for the full output. Not available
+in plan mode, since it runs code.
+
 ### MCP servers
 
 forge can use tools from any [Model Context Protocol](https://modelcontextprotocol.io)

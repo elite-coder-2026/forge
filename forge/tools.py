@@ -12,7 +12,7 @@ import os
 import subprocess
 from typing import Any
 
-from . import lsp, mcp, undo
+from . import lsp, mcp, testrunner, undo
 
 
 class ToolError(Exception):
@@ -148,6 +148,22 @@ def run_shell(base_dir: str, command: str, timeout: int = 60) -> str:
     if result.stderr:
         parts.append(f"stderr:\n{result.stderr}")
     return "\n".join(parts)
+
+
+def run_tests(
+    base_dir: str,
+    path: str | None = None,
+    command: str | None = None,
+    verbose: Any = False,
+    timeout: int = testrunner.DEFAULT_TIMEOUT,
+) -> str:
+    if path:
+        if path.startswith("-"):
+            raise ToolError("path must be a test file, directory or test id, not an option")
+        _safe_path(base_dir, path.split("::", 1)[0])  # must stay inside the project
+    if isinstance(verbose, str):
+        verbose = verbose.strip().lower() in ("1", "true", "yes")
+    return testrunner.run_tests(base_dir, path, command, bool(verbose), timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +376,25 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "run_tests",
+            "description": (
+                "Run the project's tests (pytest or unittest, auto-detected) and get a short summary: "
+                "pass/fail counts and the names of failing tests. Prefer this over run_shell for testing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional test file, directory or test id (e.g. tests/test_a.py::test_x)."},
+                    "command": {"type": "string", "description": "Optional custom test command (e.g. 'npm test') instead of auto-detection."},
+                    "verbose": {"type": "boolean", "description": "Include the full test output."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_definition",
             "description": "Go to the definition of the symbol at a position in a Python file (semantic, via the language server).",
             "parameters": {
@@ -427,6 +462,7 @@ _DISPATCH = {
     "edit_file": edit_file,
     "list_dir": list_dir,
     "run_shell": run_shell,
+    "run_tests": run_tests,
     "find_definition": find_definition,
     "find_references": find_references,
     "hover": hover,
@@ -499,6 +535,9 @@ def call_tool(
     kwargs = dict(arguments)
     if name == "run_shell":
         kwargs.setdefault("timeout", shell_timeout)
+    elif name == "run_tests":
+        # A test suite legitimately takes longer than a one-off command.
+        kwargs.setdefault("timeout", max(shell_timeout, testrunner.DEFAULT_TIMEOUT))
 
     try:
         return func(base_dir, **kwargs)
