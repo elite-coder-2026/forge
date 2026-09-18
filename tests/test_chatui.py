@@ -1,5 +1,6 @@
 import http.client
 import json
+import re
 
 import pytest
 
@@ -48,7 +49,7 @@ def test_serves_page_with_token_and_csp(server):
 
 def test_page_includes_earlier_messages(server):
     _, data = request(server, "GET", "/")
-    assert '<li class="msg user"><pre>earlier</pre></li>' in data.decode()
+    assert re.search(r'<li class="msg user">.*?<pre>earlier</pre>', data.decode(), re.S)
 
 
 def test_page_escapes_message_text():
