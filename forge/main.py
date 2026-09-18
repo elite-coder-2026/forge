@@ -799,10 +799,11 @@ def run_repl(
         state.history = resumed
         print(f"Resumed previous session ({len(resumed)} messages). /clear starts fresh.")
 
+    prompt_session = _make_prompt_session(workspace)
     while True:
         state = workspace.state  # /session commands can change which one is active
         try:
-            line = input(_repl_prompt(state))
+            line = _read_line(prompt_session, state)
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -864,6 +865,51 @@ def run_repl(
         session.save(state.config.session_file, state.history)
         printer.finish(fallback=result.content)
         _git_report(before, line, interactive=True)
+
+
+SLASH_COMMANDS = [
+    "/help", "/clear", "/model", "/pull", "/usage", "/voice", "/plugins", "/mcp",
+    "/budget", "/auto", "/fast", "/session", "/undo", "/image", "/plan", "/build",
+    "/exit", "/quit",
+]
+HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".forge", "history")
+
+
+def _make_prompt_session(workspace: Workspace) -> Any:
+    """A prompt_toolkit session (history, `/` completion, status toolbar), or
+    None when stdin/stdout aren't a terminal so plain `input()` is used."""
+    if not _is_interactive():
+        return None
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import WordCompleter
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        return None
+
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+
+    def toolbar() -> str:
+        state = workspace.state
+        tokens, seconds = _session_totals()
+        mode = "plan (read-only)" if state.plan_mode else "build"
+        return f" {state.config.model} | {mode} | {tokens:,} tokens | {seconds / 60:.1f} min "
+
+    return PromptSession(
+        history=FileHistory(HISTORY_FILE),
+        completer=WordCompleter(SLASH_COMMANDS, sentence=True),
+        complete_while_typing=True,
+        bottom_toolbar=toolbar,
+        style=Style.from_dict({"prompt": "ansicyan bold", "bottom-toolbar": "reverse"}),
+    )
+
+
+def _read_line(prompt_session: Any, state: REPLState) -> str:
+    text = _repl_prompt(state)
+    if prompt_session is None:
+        return input(text)
+    return prompt_session.prompt([("class:prompt", text)])
 
 
 def _repl_prompt(state: REPLState) -> str:
