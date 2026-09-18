@@ -150,6 +150,24 @@ files are named, lists, tracebacks), so it costs no extra model call.
   model, and `/model <name>` or `--model` count as an explicit choice and
   turn routing off. Without a fast model, nothing changes.
 
+### Web dashboard
+
+`forge -i --web` serves a read-only page at `http://localhost:8765`
+(`--web-port N`; `0` picks a free port) so you can glance at usage and the
+conversation without keeping the terminal focused. It shows session and
+all-time tokens against your budget, model compute time, the estimated
+money saved, each open session's conversation (tool calls included), and
+the recent file changes that `/undo` could revert. It refreshes every two
+seconds and stops when forge exits. It's most useful with `-i`; a one-shot
+run ends before there's much to see.
+
+It exposes your conversations, so it's locked down: it listens on
+`127.0.0.1` only, answers `GET` only (nothing can be changed through it),
+rejects requests whose `Host` isn't localhost on its port (blocking
+DNS-rebinding from other web pages), sends a strict
+Content-Security-Policy with no third-party assets, and renders all data as
+text, never HTML. Long messages are truncated in the view.
+
 ### Plugins (custom tools)
 
 Add your own tools without editing forge. Put a `.py` file in

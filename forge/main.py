@@ -12,6 +12,7 @@ needed that import, so it's just gone.
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import shlex
 import subprocess
@@ -21,7 +22,7 @@ from typing import Any
 
 import ollama
 
-from . import budget, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision
+from . import budget, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision, webui
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -89,6 +90,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plan",
         action="store_true",
         help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Serve a read-only usage/history dashboard on localhost while forge runs (best with -i).",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=webui.DEFAULT_PORT,
+        metavar="PORT",
+        help=f"Port for --web (default {webui.DEFAULT_PORT}; 0 picks a free one).",
     )
     parser.add_argument(
         "--trust-plugins",
@@ -436,6 +449,81 @@ def _handle_session_command(arg_str: str, state: REPLState) -> str:
     return usage
 
 
+# What the dashboard reads. `run_repl` publishes its workspace here; the
+# dashboard thread only ever reads it.
+_web_workspace: Workspace | None = None
+_WEB_MAX_MESSAGES = 200
+_WEB_MAX_CONTENT = 4000
+
+
+def _web_message(message: dict[str, Any]) -> dict[str, Any]:
+    content = message.get("content") or ""
+    if not isinstance(content, str):
+        content = str(content)
+    if len(content) > _WEB_MAX_CONTENT:
+        content = content[:_WEB_MAX_CONTENT] + f"\n... [{len(content) - _WEB_MAX_CONTENT} more characters]"
+
+    calls = []
+    for call in message.get("tool_calls") or []:
+        try:
+            calls.append(str(call["function"]["name"]))
+        except (KeyError, TypeError):
+            calls.append("?")
+    entry: dict[str, Any] = {"role": str(message.get("role", "?")), "content": content}
+    if calls:
+        entry["tool_calls"] = calls
+    if message.get("name"):
+        entry["name"] = str(message["name"])
+    return entry
+
+
+def _web_snapshot(config: Config) -> dict[str, Any]:
+    """A JSON-safe, read-only picture of usage and every open session."""
+    workspace = _web_workspace
+    sessions = []
+    if workspace is not None:
+        for name, s in list(workspace.sessions.items()):
+            history = list(s.history)  # copy: the REPL replaces, but never mutates, it mid-task
+            sessions.append(
+                {
+                    "name": name,
+                    "current": name == workspace.current,
+                    "directory": os.path.realpath(s.config.working_dir),
+                    "model": s.config.model,
+                    "plan_mode": s.plan_mode,
+                    "message_count": len(history),
+                    "messages": [_web_message(m) for m in history[-_WEB_MAX_MESSAGES:]],
+                    "changes": undo.history(s.config.working_dir),
+                }
+            )
+
+    all_time = llm.get_persisted_usage(config.usage_file)
+    return {
+        "sessions": sessions,
+        "usage": {
+            "session": llm.get_usage(),
+            "all_time": all_time,
+            "compute_seconds": llm.get_compute_seconds(),
+            "estimated_saved_usd": _estimate_savings(all_time, config),
+        },
+        "budget": {
+            "tokens_limit": config.budget_tokens,
+            "minutes_limit": config.budget_minutes,
+        },
+    }
+
+
+def _start_web(config: Config, port: int) -> webui.Dashboard | None:
+    try:
+        dashboard = webui.Dashboard(lambda: _web_snapshot(config), port)
+    except OSError as e:
+        print(f"Dashboard not started: could not listen on port {port}: {e}", file=sys.stderr)
+        return None
+    atexit.register(dashboard.stop)
+    print(f"Dashboard: {dashboard.url} (read-only, localhost only)", file=sys.stderr)
+    return dashboard
+
+
 def _session_totals() -> tuple[int, float]:
     usage = llm.get_usage()
     return usage["prompt_tokens"] + usage["completion_tokens"], llm.get_compute_seconds()
@@ -657,6 +745,8 @@ def run_repl(
     )
     workspace = Workspace({state.name: state}, state.name)
     state.workspace = workspace
+    global _web_workspace
+    _web_workspace = workspace
     print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
     if state.plan_mode:
         print("Starting in plan mode (read-only). /build to exit.")
@@ -798,6 +888,8 @@ def main(argv: list[str] | None = None) -> int:
 
     _start_mcp(config, args.trust_mcp)
     _load_plugins(config, args.trust_plugins)
+    if args.web:
+        _start_web(config, args.web_port)
 
     client = ollama.Client(host=config.host)
 
