@@ -41,6 +41,7 @@ Environment variables (all optional):
 |---|---|---|
 | `FORGE_MODEL` | `qwen2.5-coder` | Ollama model to use |
 | `FORGE_HOST` | `http://localhost:11434` | Ollama server URL |
+| `FORGE_VISION_MODEL` | `gemma3:12b` | Vision model that describes attached images (`ollama pull` it first) |
 | `FORGE_MAX_ITERATIONS` | `25` | Max tool-call rounds per task |
 | `FORGE_SHELL_TIMEOUT` | `60` | Seconds before a shell command times out |
 | `FORGE_WORKING_DIR` | `.` | Sandbox root for file/shell tools |
@@ -59,6 +60,26 @@ Install the server with `pip install "forge[lsp]"` (or `pip install
 pyright`). forge also finds it in the same virtualenv as forge itself.
 Set `FORGE_LSP_COMMAND` to use a different server command. Without a
 server, the tools return an error telling the model how to install it.
+
+### Images (screenshot → code)
+
+Attach a screenshot or mockup and forge builds from it:
+
+```
+forge --image mockup.png "build this login page in React"
+```
+
+In the REPL, `/image <path>` attaches images to your next task (`/image`
+lists them, `/image clear` drops them; quote paths with spaces).
+PNG, JPEG, GIF and WebP up to 20 MB.
+
+Vision models such as Gemma 3 can't call tools, and coding models can't
+see images, so forge hands off in two steps: the vision model
+(`FORGE_VISION_MODEL` / `vision_model`, default `gemma3:12b`) writes a
+detailed description of the image, and that text is added to your task for
+your normal coding model. Pull the vision model first with
+`ollama pull gemma3:12b` (or `gemma3:4b` for less memory). Its token usage
+counts toward `/usage`.
 
 ### Project config file
 

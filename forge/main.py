@@ -12,6 +12,7 @@ needed that import, so it's just gone.
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from typing import Any
 
 import ollama
 
-from . import gitutil, llm, session
+from . import gitutil, llm, session, vision
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -29,6 +30,7 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /image <path>    Attach image(s) to the next task (screenshot -> code). /image alone lists; /image clear drops them.
   /plan            Enter plan mode: read-only tools only, no edits or shell commands.
   /build           Exit plan mode: full tool access again.
   /exit, /quit     Exit the REPL.
@@ -45,6 +47,7 @@ class REPLState:
     client: Any
     history: list[dict[str, Any]] = field(default_factory=llm.new_history)
     plan_mode: bool = False
+    pending_images: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +64,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plan",
         action="store_true",
         help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Attach a screenshot/mockup (repeatable). A vision model describes it for the coding model.",
     )
     return parser
 
@@ -122,6 +132,9 @@ def handle_slash_command(line: str, state: REPLState) -> str:
     if name == "/usage":
         return _format_usage(state.config)
 
+    if name == "/image":
+        return _handle_image_command(arg_str, state)
+
     if name == "/plan":
         state.plan_mode = True
         return "Entered plan mode: read-only tools only. /build to exit."
@@ -134,6 +147,39 @@ def handle_slash_command(line: str, state: REPLState) -> str:
         return HELP_TEXT
 
     return f"Unknown command: {name!r} (try /help)"
+
+
+def _handle_image_command(arg_str: str, state: REPLState) -> str:
+    if not arg_str:
+        if not state.pending_images:
+            return "No images attached. Usage: /image <path> [<path> ...]"
+        return "Attached for the next task:\n" + "\n".join(f"  {p}" for p in state.pending_images)
+    if arg_str == "clear":
+        state.pending_images = []
+        return "Attached images cleared."
+
+    try:
+        paths = shlex.split(arg_str)
+    except ValueError as e:
+        return f"Error: could not parse paths: {e}"
+    try:
+        resolved = [vision.resolve_image(p, state.config.working_dir) for p in paths]
+    except vision.VisionError as e:
+        return f"Error: {e}"
+
+    state.pending_images.extend(p for p in resolved if p not in state.pending_images)
+    return (
+        f"{len(state.pending_images)} image(s) attached; they'll be described by "
+        f"{state.config.vision_model} and sent with your next task."
+    )
+
+
+def _with_images(task: str, images: list[str], config: Config, client: Any) -> str:
+    """`task` plus a vision-model description of `images`, if there are any."""
+    if not images:
+        return task
+    print(f"Analyzing {len(images)} image(s) with {config.vision_model}...", flush=True)
+    return vision.enrich_task(task, images, client, config.vision_model, config.usage_file)
 
 
 def _pull_model(model_name: str) -> str:
@@ -242,11 +288,20 @@ class _LivePrinter:
             print(fallback)
 
 
-def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
-    state = REPLState(config=config, client=client, plan_mode=plan_mode)
+def run_repl(
+    config: Config,
+    client: Any,
+    plan_mode: bool = False,
+    images: list[str] | None = None,
+) -> None:
+    state = REPLState(
+        config=config, client=client, plan_mode=plan_mode, pending_images=list(images or [])
+    )
     print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
     if state.plan_mode:
         print("Starting in plan mode (read-only). /build to exit.")
+    if state.pending_images:
+        print(f"{len(state.pending_images)} image(s) attached for your first task.")
 
     resumed = session.load(config.session_file)
     if resumed:
@@ -275,8 +330,10 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
         printer = _LivePrinter()
         before = None if state.plan_mode else gitutil.snapshot(state.config.working_dir)
         try:
+            task_text = _with_images(line, state.pending_images, state.config, state.client)
+            state.pending_images = []
             result = llm.run_task(
-                line,
+                task_text,
                 state.history,
                 state.client,
                 state.config.model,
@@ -302,12 +359,19 @@ def _repl_prompt(state: REPLState) -> str:
     return "[plan] > " if state.plan_mode else "> "
 
 
-def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) -> int:
+def run_once(
+    task: str,
+    config: Config,
+    client: Any,
+    plan_mode: bool = False,
+    images: list[str] | None = None,
+) -> int:
     printer = _LivePrinter()
     before = None if plan_mode else gitutil.snapshot(config.working_dir)
     try:
+        task_text = _with_images(task, images or [], config, client)
         result = llm.run_task(
-            task,
+            task_text,
             llm.new_history(),
             client,
             config.model,
@@ -342,13 +406,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.host:
         config.host = args.host
 
+    try:
+        images = [vision.resolve_image(p, config.working_dir) for p in args.image]
+    except vision.VisionError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
     client = ollama.Client(host=config.host)
 
     if args.interactive or task is None:
-        run_repl(config, client, plan_mode=args.plan)
+        run_repl(config, client, plan_mode=args.plan, images=images)
         return 0
 
-    return run_once(task, config, client, plan_mode=args.plan)
+    return run_once(task, config, client, plan_mode=args.plan, images=images)
 
 
 if __name__ == "__main__":

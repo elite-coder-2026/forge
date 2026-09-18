@@ -22,6 +22,8 @@ DEFAULT_MODEL = "qwen2.5-coder"
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_MAX_ITERATIONS = 25
 DEFAULT_SHELL_TIMEOUT = 60
+# Used to describe attached images (see forge/vision.py). Gemma 3 supports image input.
+DEFAULT_VISION_MODEL = "gemma3:12b"
 DEFAULT_USAGE_FILE = os.path.join(os.path.expanduser("~"), ".forge", "usage.json")
 
 CONFIG_FILENAME = "forge.toml"
@@ -48,6 +50,7 @@ class ConfigError(Exception):
 _FILE_KEYS: dict[str, tuple[type, ...]] = {
     "model": (str,),
     "host": (str,),
+    "vision_model": (str,),
     "max_iterations": (int,),
     "shell_timeout": (int,),
     "usage_file": (str,),
@@ -102,6 +105,7 @@ class Config:
 
     model: str = DEFAULT_MODEL
     host: str = DEFAULT_HOST
+    vision_model: str = DEFAULT_VISION_MODEL
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     shell_timeout: int = DEFAULT_SHELL_TIMEOUT
     working_dir: str = "."
@@ -136,6 +140,7 @@ class Config:
         return cls(
             model=pick("FORGE_MODEL", "model", DEFAULT_MODEL),
             host=pick("FORGE_HOST", "host", DEFAULT_HOST),
+            vision_model=pick("FORGE_VISION_MODEL", "vision_model", DEFAULT_VISION_MODEL),
             max_iterations=pick(
                 "FORGE_MAX_ITERATIONS", "max_iterations", DEFAULT_MAX_ITERATIONS, int
             ),
