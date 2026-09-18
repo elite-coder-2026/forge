@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="forge-token" content="{{ token }}">
+<title>forge chat</title>
+<link rel="stylesheet" href="/chat.css">
+</head>
+<body>
+<header>
+  <h1>forge chat</h1>
+  <span id="status">ready</span>
+</header>
+<ol id="log" aria-live="polite">
+{%- for message in messages %}
+  <li class="msg {{ message.role }}"><pre>{{ message.content }}</pre></li>
+{%- endfor %}
+</ol>
+<form id="form">
+  <textarea id="input" rows="3" placeholder="Describe a task... (Enter sends, Shift+Enter adds a line)" autofocus></textarea>
+  <button id="send" type="submit">Send</button>
+</form>
+<script src="/chat.js"></script>
+</body>
+</html>
