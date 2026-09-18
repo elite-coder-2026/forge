@@ -7,5 +7,5 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 - [x] Test-runner integration
 - [x] Multiple concurrent sessions
 - [x] Plugin/extension system
-- [ ] Web dashboard (`--web`)
+- [x] Web dashboard (`--web`)
 - [ ] Voice input
