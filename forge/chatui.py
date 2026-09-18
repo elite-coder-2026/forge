@@ -6,8 +6,12 @@ or run shell commands, so it is locked down the same way plus a few more:
 - rejects requests whose Host isn't localhost on our port (DNS rebinding);
 - POST needs a per-run secret token (given only to the page we serve), a
   JSON content type and, when the browser sends one, a same-origin Origin;
-- strict Content-Security-Policy, no third-party assets, and the page
-  renders everything with `textContent` (never as HTML).
+- strict Content-Security-Policy, no third-party assets, and message text is
+  never treated as HTML: the Jinja template autoescapes it, and the page's
+  script adds new messages with `textContent`.
+
+The page itself is a Jinja template (`templates/chat.html`), rendered on each
+load with the session's earlier messages already in it.
 """
 
 from __future__ import annotations
@@ -16,34 +20,22 @@ import hmac
 import json
 import secrets
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .webui import HOST, _CSP
 
 DEFAULT_PORT = 8766
 MAX_BODY_BYTES = 64 * 1024
 
-INDEX_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="forge-token" content="__TOKEN__">
-<title>forge chat</title>
-<link rel="stylesheet" href="/chat.css">
-</head>
-<body>
-<header><h1>forge chat</h1><span id="status">ready</span></header>
-<ol id="log" aria-live="polite"></ol>
-<form id="form">
-  <textarea id="input" rows="3" placeholder="Describe a task... (Enter sends, Shift+Enter adds a line)" autofocus></textarea>
-  <button id="send" type="submit">Send</button>
-</form>
-<script src="/chat.js"></script>
-</body>
-</html>
-"""
+# Autoescaping is on for .html, so message text can never become markup.
+_env = Environment(
+    loader=FileSystemLoader(Path(__file__).parent / "templates"),
+    autoescape=select_autoescape(["html"]),
+)
 
 CHAT_CSS = """\
 :root { --bg:#fafafa; --fg:#1b1b1f; --muted:#6b6b76; --card:#fff; --line:#e2e2e8; --accent:#3b5bdb; --warn:#c92a2a; }
@@ -85,14 +77,6 @@ function add(role, text) {
   log.scrollTop = log.scrollHeight;
 }
 
-async function loadHistory() {
-  try {
-    const response = await fetch('/api/history', { cache: 'no-store' });
-    if (!response.ok) return;
-    for (const m of await response.json()) add(m.role, m.content);
-  } catch (error) { /* an empty chat is fine */ }
-}
-
 async function submit() {
   const message = input.value.trim();
   if (!message) return;
@@ -125,7 +109,7 @@ document.getElementById('form').addEventListener('submit', (e) => { e.preventDef
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
 });
-loadHistory();
+log.scrollTop = log.scrollHeight;
 """
 
 
@@ -136,8 +120,6 @@ def _make_handler(
     token: str,
 ) -> type:
     assets = {
-        "/": ("text/html; charset=utf-8", INDEX_HTML.replace("__TOKEN__", token)),
-        "/index.html": ("text/html; charset=utf-8", INDEX_HTML.replace("__TOKEN__", token)),
         "/chat.css": ("text/css; charset=utf-8", CHAT_CSS),
         "/chat.js": ("text/javascript; charset=utf-8", CHAT_JS),
     }
@@ -184,7 +166,10 @@ def _make_handler(
                 self._send(403, "text/plain; charset=utf-8", b"Forbidden host")
                 return
             path = self.path.split("?", 1)[0]
-            if path in assets:
+            if path in ("/", "/index.html"):
+                page = _env.get_template("chat.html").render(token=token, messages=history())
+                self._send(200, "text/html; charset=utf-8", page.encode("utf-8"))
+            elif path in assets:
                 content_type, text = assets[path]
                 self._send(200, content_type, text.encode("utf-8"))
             elif path == "/api/history":
