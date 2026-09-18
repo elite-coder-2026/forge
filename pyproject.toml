@@ -22,6 +22,9 @@ dev = [
 lsp = [
     "pyright",
 ]
+voice = [
+    "faster-whisper",
+]
 
 [project.scripts]
 forge = "forge.main:main"
