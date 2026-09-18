@@ -9,17 +9,32 @@
 </head>
 <body>
 <header>
-  <h1>forge chat</h1>
-  <span id="status">ready</span>
+  <div class="brand"><span class="logo" aria-hidden="true"></span><h1>forge</h1></div>
+  <span id="status" class="pill" role="status">ready</span>
 </header>
-<ol id="log" aria-live="polite">
+<main id="scroller">
+  <ol id="log" aria-live="polite">
 {%- for message in messages %}
-  <li class="msg {{ message.role }}"><pre>{{ message.content }}</pre></li>
+    <li class="msg {{ message.role }}">
+      <span class="who">{{ "You" if message.role == "user" else "forge" }}</span>
+      <pre>{{ message.content }}</pre>
+    </li>
 {%- endfor %}
-</ol>
+  </ol>
+  <p id="empty" class="empty"{% if messages %} hidden{% endif %}>
+    <strong>What should forge work on?</strong>
+    Describe a task below, like &ldquo;add a docstring to forge/config.py&rdquo;.
+  </p>
+  <div id="working" class="working" hidden aria-label="forge is working">
+    <span></span><span></span><span></span>
+  </div>
+</main>
 <form id="form">
-  <textarea id="input" rows="3" placeholder="Describe a task... (Enter sends, Shift+Enter adds a line)" autofocus></textarea>
-  <button id="send" type="submit">Send</button>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Message forge..." aria-label="Message" autofocus></textarea>
+    <button id="send" type="submit" aria-label="Send">&uarr;</button>
+  </div>
+  <p class="hint">Enter to send &middot; Shift+Enter for a new line</p>
 </form>
 <script src="/chat.js"></script>
 </body>

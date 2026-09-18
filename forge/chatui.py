@@ -38,53 +38,110 @@ _env = Environment(
 )
 
 CHAT_CSS = """\
-:root { --bg:#fafafa; --fg:#1b1b1f; --muted:#6b6b76; --card:#fff; --line:#e2e2e8; --accent:#3b5bdb; --warn:#c92a2a; }
+:root {
+  --bg:#f6f7fb; --surface:#ffffff; --fg:#1c1d26; --muted:#6c6f80; --line:#e3e5ee;
+  --accent:#5b5bd6; --accent-fg:#ffffff; --accent-soft:#ececfb; --warn:#c8323a; --warn-soft:#fdecee;
+  --shadow:0 1px 2px rgba(20,20,40,.06), 0 4px 16px rgba(20,20,40,.06);
+}
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#141417; --fg:#ececf1; --muted:#9a9aa8; --card:#1e1e23; --line:#33333b; --accent:#748ffc; --warn:#ff8787; }
+  :root {
+    --bg:#101117; --surface:#191b24; --fg:#e9eaf2; --muted:#9295a8; --line:#292c3a;
+    --accent:#7b7bf0; --accent-fg:#0d0e14; --accent-soft:#23243a; --warn:#ff8a90; --warn-soft:#2e1a1e;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
+  }
 }
 * { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; display:flex; flex-direction:column; height:100vh; }
-header { display:flex; align-items:baseline; gap:1rem; padding:.75rem 1.25rem; border-bottom:1px solid var(--line); }
-h1 { margin:0; font-size:1.1rem; }
-#status { color:var(--muted); font-size:.85rem; }
-#status.error { color:var(--warn); }
-#log { flex:1; overflow:auto; list-style:none; margin:0; padding:1rem 1.25rem; display:flex; flex-direction:column; gap:.6rem; }
-.msg { max-width:48rem; padding:.6rem .85rem; border:1px solid var(--line); border-radius:10px; background:var(--card); }
-.msg.user { align-self:flex-end; border-color:var(--accent); }
-.msg.error { border-color:var(--warn); color:var(--warn); }
-.msg pre { margin:0; white-space:pre-wrap; word-break:break-word; font:inherit; }
-form { display:flex; gap:.5rem; padding:.75rem 1.25rem; border-top:1px solid var(--line); }
-textarea { flex:1; font:inherit; padding:.5rem .6rem; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--fg); resize:vertical; }
-button { font:inherit; padding:.5rem 1.1rem; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
-button:disabled { opacity:.5; cursor:wait; }
+html, body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; display:flex; flex-direction:column; }
+
+header { display:flex; align-items:center; justify-content:space-between; padding:.7rem 1.25rem; background:var(--surface); border-bottom:1px solid var(--line); }
+.brand { display:flex; align-items:center; gap:.55rem; }
+.logo { width:1.15rem; height:1.15rem; border-radius:.35rem; background:linear-gradient(135deg, var(--accent), #e0709a); }
+h1 { margin:0; font-size:1.05rem; font-weight:650; letter-spacing:.01em; }
+.pill { font-size:.78rem; color:var(--muted); background:var(--bg); border:1px solid var(--line); padding:.15rem .65rem; border-radius:999px; }
+.pill.busy { color:var(--accent); border-color:var(--accent); }
+.pill.error { color:var(--warn); border-color:var(--warn); }
+
+#scroller { flex:1; overflow-y:auto; padding:1.25rem 1rem 0; scroll-behavior:smooth; }
+#log { list-style:none; margin:0 auto; padding:0; max-width:46rem; display:flex; flex-direction:column; gap:1rem; }
+.msg { display:flex; flex-direction:column; gap:.2rem; max-width:88%; }
+.msg .who { font-size:.72rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); padding:0 .25rem; }
+.msg pre { margin:0; white-space:pre-wrap; word-break:break-word; font:inherit; padding:.7rem .95rem; border-radius:14px; background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow); }
+.msg.user { align-self:flex-end; align-items:flex-end; }
+.msg.user pre { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); border-bottom-right-radius:4px; }
+.msg.assistant pre { border-bottom-left-radius:4px; }
+.msg.error pre { background:var(--warn-soft); color:var(--warn); border-color:var(--warn); }
+
+.empty { max-width:28rem; margin:18vh auto 0; text-align:center; color:var(--muted); }
+.empty strong { display:block; font-size:1.15rem; color:var(--fg); margin-bottom:.35rem; }
+.empty[hidden], .working[hidden] { display:none; }
+
+.working { max-width:46rem; margin:1rem auto 0; display:flex; gap:.3rem; padding:.2rem .5rem; }
+.working span { width:.5rem; height:.5rem; border-radius:50%; background:var(--accent); opacity:.35; animation:pulse 1.2s infinite ease-in-out; }
+.working span:nth-child(2) { animation-delay:.15s; }
+.working span:nth-child(3) { animation-delay:.3s; }
+@keyframes pulse { 0%, 80%, 100% { opacity:.25; transform:scale(.85); } 40% { opacity:1; transform:scale(1); } }
+@media (prefers-reduced-motion: reduce) { .working span { animation:none; opacity:.7; } #scroller { scroll-behavior:auto; } }
+
+form { padding:.75rem 1rem 1rem; }
+.composer { max-width:46rem; margin:0 auto; display:flex; align-items:flex-end; gap:.5rem; padding:.45rem .45rem .45rem .95rem; background:var(--surface); border:1px solid var(--line); border-radius:18px; box-shadow:var(--shadow); }
+.composer:focus-within { border-color:var(--accent); }
+textarea { flex:1; font:inherit; color:var(--fg); background:transparent; border:0; outline:0; resize:none; max-height:12rem; padding:.4rem 0; }
+textarea::placeholder { color:var(--muted); }
+button { flex:none; width:2.25rem; height:2.25rem; border:0; border-radius:50%; background:var(--accent); color:var(--accent-fg); font-size:1.15rem; line-height:1; cursor:pointer; }
+button:hover:not(:disabled) { filter:brightness(1.08); }
+button:disabled { opacity:.4; cursor:wait; }
+button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.hint { max-width:46rem; margin:.4rem auto 0; text-align:center; font-size:.75rem; color:var(--muted); }
 """
 
 CHAT_JS = """\
 'use strict';
+const scroller = document.getElementById('scroller');
 const log = document.getElementById('log');
+const empty = document.getElementById('empty');
+const working = document.getElementById('working');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
 const status = document.getElementById('status');
 const token = document.querySelector('meta[name="forge-token"]').content;
 
+function scrollDown() { scroller.scrollTop = scroller.scrollHeight; }
+
 function add(role, text) {
   const li = document.createElement('li');
   li.className = 'msg ' + role;
+  const who = document.createElement('span');
+  who.className = 'who';
+  who.textContent = role === 'user' ? 'You' : role === 'error' ? 'Error' : 'forge';
   const pre = document.createElement('pre');
   pre.textContent = text;
-  li.append(pre);
+  li.append(who, pre);
   log.append(li);
-  log.scrollTop = log.scrollHeight;
+  empty.hidden = true;
+  scrollDown();
+}
+
+function setBusy(busy) {
+  send.disabled = busy;
+  working.hidden = !busy;
+  status.className = busy ? 'pill busy' : 'pill';
+  status.textContent = busy ? 'working...' : 'ready';
+  if (busy) scrollDown();
+}
+
+function autosize() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 192) + 'px';
 }
 
 async function submit() {
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || send.disabled) return;
   input.value = '';
+  autosize();
   add('user', message);
-  send.disabled = true;
-  status.className = '';
-  status.textContent = 'working...';
+  setBusy(true);
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
@@ -94,22 +151,23 @@ async function submit() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
     add('assistant', data.reply || '(no reply)');
-    status.textContent = 'ready';
+    setBusy(false);
   } catch (error) {
-    add('error', 'Error: ' + error.message);
-    status.className = 'error';
+    add('error', error.message);
+    setBusy(false);
+    status.className = 'pill error';
     status.textContent = 'failed';
   } finally {
-    send.disabled = false;
     input.focus();
   }
 }
 
 document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+input.addEventListener('input', autosize);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
 });
-log.scrollTop = log.scrollHeight;
+scrollDown();
 """
 
 
