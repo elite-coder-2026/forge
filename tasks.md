@@ -24,7 +24,7 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 
 ## 🟡 Good to have
 - [x] LSP integration
-- [ ] Vision support (image-to-code)
+- [x] Vision support (image-to-code)
 - [ ] Undo / rollback (`/undo`)
 - [ ] Auto model selection by task size
 - [ ] Token/cost budget alerts
