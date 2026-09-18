@@ -7,17 +7,21 @@ is sent to any service by forge itself; what your transcriber does is up to
 you (whisper.cpp keeps everything on your machine).
 
 Both commands are templates: `{audio}` is the WAV path, and `{seconds}` (in
-the recorder) is the maximum length.
+the recorder) is the maximum length. With no `voice_transcribe` set, forge
+falls back to its built-in offline transcriber (forge/transcribe.py) when
+the optional `faster-whisper` package is installed.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import platform
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Callable
 
@@ -32,6 +36,56 @@ _NOISE = re.compile(r"[\[(][^\])]*(?:blank_audio|silence|music|noise|inaudible)[
 
 class VoiceError(Exception):
     """Recording or transcription failed, with a message meant for the user."""
+
+
+def builtin_available() -> bool:
+    return importlib.util.find_spec("faster_whisper") is not None
+
+
+def builtin_command() -> str:
+    return f"{shlex.quote(sys.executable)} -m forge.transcribe {{audio}}"
+
+
+def resolve_transcriber(configured: str) -> str:
+    """The user's command, else the built-in one, else a helpful error."""
+    if configured.strip():
+        return configured.strip()
+    if builtin_available():
+        return builtin_command()
+    raise VoiceError(
+        "voice input needs a speech-to-text engine. Easiest: pip install "
+        '"forge[voice]" (offline, no other setup). Or set voice_transcribe in forge.toml '
+        "(or FORGE_VOICE_TRANSCRIBE) to your own command, for example: "
+        'voice_transcribe = "whisper-cli -m ~/models/ggml-base.en.bin -f {audio} -nt"'
+    )
+
+
+def _builtin_model_cached() -> bool:
+    """Whether the built-in model is already downloaded. Unsure counts as
+    yes, so a quirk here can only skip the friendly notice, never block."""
+    from .transcribe import model_name
+
+    name = model_name()
+    if os.path.isdir(name) or "/" in name:  # a local path or a custom repo
+        return True
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        found = try_to_load_from_cache(f"Systran/faster-whisper-{name}", "model.bin")
+        return isinstance(found, str)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _prefetch_builtin_model() -> None:
+    """Download the model up front, with visible progress, so it never
+    happens silently in the middle of a dictation."""
+    try:
+        result = subprocess.run([sys.executable, "-m", "forge.transcribe", "--prefetch"])
+    except OSError as e:
+        raise VoiceError(f"could not start the transcriber: {e}")
+    if result.returncode != 0:
+        raise VoiceError("could not download the speech model. Check your internet connection and try again.")
 
 
 def find_recorder(
@@ -69,27 +123,46 @@ def clean_transcript(text: str) -> str:
     return " ".join(text.split())
 
 
-def record(template: str, audio: str, seconds: int) -> None:
+def record(template: str, audio: str, seconds: int) -> bool:
+    """Run the recorder. Returns True if Ctrl+C ended it early.
+
+    A terminal's Ctrl+C reaches the recorder too, and sox/arecord/ffmpeg all
+    finish the file properly on it, so it means "I'm done speaking" rather
+    than "throw it away".
+    """
     if "{audio}" not in template:
         raise VoiceError("voice_record must contain {audio} (where the recording is written)")
+    proc = subprocess.Popen(
+        _fill(template, audio, seconds),
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    interrupted = False
     try:
-        result = subprocess.run(
-            _fill(template, audio, seconds),
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=seconds + RECORD_GRACE,
-        )
+        out, err = proc.communicate(timeout=seconds + RECORD_GRACE)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
         raise VoiceError("the recorder didn't stop in time")
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip().splitlines()
+    except KeyboardInterrupt:
+        interrupted = True
+        try:
+            out, err = proc.communicate(timeout=5)  # let it finalize the file
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            proc.kill()
+            out, err = proc.communicate()
+
+    if proc.returncode != 0 and not interrupted:
+        detail = (err or out or "").strip().splitlines()
         raise VoiceError(
-            "recording failed" + (f": {detail[-1]}" if detail else f" (exit code {result.returncode})")
+            "recording failed" + (f": {detail[-1]}" if detail else f" (exit code {proc.returncode})")
             + ". Check microphone access for your terminal."
         )
     if not os.path.isfile(audio) or os.path.getsize(audio) == 0:
         raise VoiceError("nothing was recorded. Check microphone access for your terminal.")
+    return interrupted
 
 
 def transcribe(template: str, audio: str) -> str:
@@ -116,14 +189,15 @@ def transcribe(template: str, audio: str) -> str:
     return text
 
 
-def listen(record_command: str, transcribe_command: str, seconds: int) -> str:
+def listen(
+    record_command: str,
+    transcribe_command: str,
+    seconds: int,
+    on_status: Callable[[str], None] | None = None,
+) -> str:
     """Record from the microphone and return the transcript."""
-    if not transcribe_command.strip():
-        raise VoiceError(
-            "voice input needs a speech-to-text command. Set voice_transcribe in forge.toml "
-            "(or FORGE_VOICE_TRANSCRIBE), for example: "
-            'voice_transcribe = "whisper-cli -m ~/models/ggml-base.en.bin -f {audio} -nt"'
-        )
+    say = on_status or (lambda message: None)
+    transcriber = resolve_transcriber(transcribe_command)
     recorder = record_command.strip() or find_recorder()
     if not recorder:
         raise VoiceError(
@@ -131,7 +205,13 @@ def listen(record_command: str, transcribe_command: str, seconds: int) -> str:
             "or set voice_record in forge.toml (FORGE_VOICE_RECORD)."
         )
 
+    if not transcribe_command.strip() and not _builtin_model_cached():
+        say("First use: downloading the speech model (about 150 MB, once)...")
+        _prefetch_builtin_model()
+
     with tempfile.TemporaryDirectory(prefix="forge-voice-") as tmp:
         audio = os.path.join(tmp, "clip.wav")
+        say(f"Listening (up to {seconds}s). Press Ctrl+C when you're done speaking...")
         record(recorder, audio, seconds)
-        return transcribe(transcribe_command, audio)
+        say("Transcribing...")
+        return transcribe(transcriber, audio)
