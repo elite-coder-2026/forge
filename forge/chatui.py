@@ -172,8 +172,6 @@ def _make_handler(
             elif path in assets:
                 content_type, text = assets[path]
                 self._send(200, content_type, text.encode("utf-8"))
-            elif path == "/api/history":
-                self._json(200, history())
             else:
                 self._send(404, "text/plain; charset=utf-8", b"Not found")
 
