@@ -19,7 +19,7 @@ from typing import Any
 
 import ollama
 
-from . import llm
+from . import gitutil, llm
 from .config import Config
 
 HELP_TEXT = """\
@@ -189,6 +189,37 @@ def _error_message(error: llm.LLMError, config: Config) -> str:
     return str(error)
 
 
+def _git_report(before: gitutil.Snapshot | None, task: str, interactive: bool) -> None:
+    """After a task: summarize the files it changed and offer to commit them.
+
+    Interactive (REPL) sessions are asked before anything is committed;
+    one-shot runs only print a suggested message. Never pushes.
+    """
+    if before is None:
+        return
+    after = gitutil.snapshot(before.root)
+    files = gitutil.changed_files(before, after) if after else []
+    if not files:
+        return
+
+    print()
+    print(gitutil.diff_summary(after, files))
+    message = gitutil.suggest_message(task)
+
+    if not interactive:
+        print(f'Suggested commit message: "{message}"')
+        return
+
+    try:
+        answer = input(f'Commit these files with message "{message}"? [y/N] ')
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if answer.strip().lower() in ("y", "yes"):
+        ok, output = gitutil.commit(after.root, files, message)
+        print(output if output else ("Committed." if ok else "Commit failed."))
+
+
 class _LivePrinter:
     """`on_token` callback that prints streamed text as it arrives.
 
@@ -236,6 +267,7 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
             continue
 
         printer = _LivePrinter()
+        before = None if state.plan_mode else gitutil.snapshot(state.config.working_dir)
         try:
             result = llm.run_task(
                 line,
@@ -256,6 +288,7 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
 
         state.history = result.history
         printer.finish(fallback=result.content)
+        _git_report(before, line, interactive=True)
 
 
 def _repl_prompt(state: REPLState) -> str:
@@ -264,6 +297,7 @@ def _repl_prompt(state: REPLState) -> str:
 
 def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) -> int:
     printer = _LivePrinter()
+    before = None if plan_mode else gitutil.snapshot(config.working_dir)
     try:
         result = llm.run_task(
             task,
@@ -283,6 +317,7 @@ def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) ->
         return 1
 
     printer.finish(fallback=result.content)
+    _git_report(before, task, interactive=False)
     return 0
 
 
