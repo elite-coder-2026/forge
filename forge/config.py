@@ -22,6 +22,9 @@ DEFAULT_MODEL = "qwen2.5-coder"
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_MAX_ITERATIONS = 25
 DEFAULT_SHELL_TIMEOUT = 60
+# Soft session budgets (see forge/budget.py). 0 disables a limit.
+DEFAULT_BUDGET_TOKENS = 200_000
+DEFAULT_BUDGET_MINUTES = 15.0
 # Used to describe attached images (see forge/vision.py). Gemma 3 supports image input.
 DEFAULT_VISION_MODEL = "gemma3:12b"
 DEFAULT_USAGE_FILE = os.path.join(os.path.expanduser("~"), ".forge", "usage.json")
@@ -54,6 +57,8 @@ _FILE_KEYS: dict[str, tuple[type, ...]] = {
     "fast_model": (str,),
     "max_iterations": (int,),
     "shell_timeout": (int,),
+    "budget_tokens": (int,),
+    "budget_minutes": (int, float),
     "usage_file": (str,),
     "session_file": (str,),
     "prompt_price_per_1m": (int, float),
@@ -112,6 +117,8 @@ class Config:
     fast_model: str = ""
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     shell_timeout: int = DEFAULT_SHELL_TIMEOUT
+    budget_tokens: int = DEFAULT_BUDGET_TOKENS
+    budget_minutes: float = DEFAULT_BUDGET_MINUTES
     working_dir: str = "."
     usage_file: str = DEFAULT_USAGE_FILE
     # Where the REPL saves/resumes its conversation. Empty disables it;
@@ -151,6 +158,12 @@ class Config:
             ),
             shell_timeout=pick(
                 "FORGE_SHELL_TIMEOUT", "shell_timeout", DEFAULT_SHELL_TIMEOUT, int
+            ),
+            budget_tokens=pick(
+                "FORGE_BUDGET_TOKENS", "budget_tokens", DEFAULT_BUDGET_TOKENS, int
+            ),
+            budget_minutes=pick(
+                "FORGE_BUDGET_MINUTES", "budget_minutes", DEFAULT_BUDGET_MINUTES, float
             ),
             working_dir=working_dir,
             usage_file=pick_path("FORGE_USAGE_FILE", "usage_file", DEFAULT_USAGE_FILE),

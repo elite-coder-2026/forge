@@ -43,6 +43,8 @@ Environment variables (all optional):
 | `FORGE_HOST` | `http://localhost:11434` | Ollama server URL |
 | `FORGE_VISION_MODEL` | `gemma3:12b` | Vision model that describes attached images (`ollama pull` it first) |
 | `FORGE_FAST_MODEL` | *(unset)* | Small, quick model for simple tasks; enables automatic model selection |
+| `FORGE_BUDGET_TOKENS` | `200000` | Soft session token limit; warns when crossed (`0` disables) |
+| `FORGE_BUDGET_MINUTES` | `15` | Soft limit on minutes of model compute per session (`0` disables) |
 | `FORGE_MAX_ITERATIONS` | `25` | Max tool-call rounds per task |
 | `FORGE_SHELL_TIMEOUT` | `60` | Seconds before a shell command times out |
 | `FORGE_WORKING_DIR` | `.` | Sandbox root for file/shell tools |
@@ -61,6 +63,26 @@ Install the server with `pip install "forge[lsp]"` (or `pip install
 pyright`). forge also finds it in the same virtualenv as forge itself.
 Set `FORGE_LSP_COMMAND` to use a different server command. Without a
 server, the tools return an error telling the model how to install it.
+
+### Budget alerts
+
+Local models cost no money per token, but a runaway session burns real
+minutes. forge warns (never blocks) when a session crosses a token or
+model-compute-time limit, checked after every model call so a long task is
+flagged mid-run, not after it finishes:
+
+```
+[budget] This session has used 212,340 tokens (soft limit 200,000). Long history is resent every step; /clear starts fresh.
+```
+
+Defaults are 200,000 tokens and 15 minutes; set `budget_tokens` /
+`budget_minutes` in `forge.toml`, or the `FORGE_BUDGET_*` variables (`0`
+turns a limit off). Each limit warns when first crossed and again at each
+further multiple (2x, 3x...), not on every step. In the REPL, `/budget`
+shows usage against the limits and `/budget tokens 50000`, `/budget
+minutes 5`, or `/budget tokens off` change them. "Compute time" is time
+spent waiting on models (including the vision model), not time you spend
+typing. Notices go to stderr.
 
 ### Automatic model selection
 

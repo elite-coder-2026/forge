@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -51,6 +52,9 @@ class OllamaUnreachableError(LLMError):
 
 _usage_lock = threading.Lock()
 _usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+# Seconds spent waiting on the model this process. Kept apart from `_usage`
+# because that dict is also the persisted, token-only running total.
+_compute_seconds = 0.0
 
 
 def get_usage() -> dict[str, int]:
@@ -58,8 +62,21 @@ def get_usage() -> dict[str, int]:
         return dict(_usage)
 
 
-def reset_usage() -> None:
+def get_compute_seconds() -> float:
     with _usage_lock:
+        return _compute_seconds
+
+
+def add_compute_seconds(seconds: float) -> None:
+    global _compute_seconds
+    with _usage_lock:
+        _compute_seconds += max(0.0, seconds)
+
+
+def reset_usage() -> None:
+    global _compute_seconds
+    with _usage_lock:
+        _compute_seconds = 0.0
         _usage["prompt_tokens"] = 0
         _usage["completion_tokens"] = 0
         _usage["calls"] = 0
@@ -245,6 +262,7 @@ def run_task(
     usage_file: str | None = None,
     read_only: bool = False,
     on_token: Callable[[str], None] | None = None,
+    on_step: Callable[[], None] | None = None,
 ) -> TaskResult:
     """Run one task to completion against `client` (an object exposing a
     `.chat(model=, messages=, tools=)` method — an `ollama.Client` in
@@ -258,6 +276,10 @@ def run_task(
     If `on_token` is given, the response is streamed and each content chunk
     is passed to it as it arrives; otherwise the call blocks for the full
     response, as before.
+
+    `on_step`, if given, is called after every model call once its usage is
+    recorded (e.g. to check a budget). It must not be able to break the
+    task, so anything it raises is ignored.
     """
     messages = list(history)
     task_content = (
@@ -273,6 +295,7 @@ def run_task(
     last_content = ""
 
     for iteration in range(max_iterations):
+        started = time.monotonic()
         try:
             if on_token is not None:
                 response = _stream_chat(client, model, messages, tools, on_token)
@@ -282,11 +305,18 @@ def run_task(
             raise OllamaUnreachableError(f"{type(e).__name__}: {e}") from e
         except Exception as e:
             raise LLMError(f"Model backend call failed: {type(e).__name__}: {e}") from e
+        finally:
+            add_compute_seconds(time.monotonic() - started)
 
         if response is None or "message" not in response:
             raise LLMError("Model backend returned a response with no 'message' field")
 
         _record_usage(response, usage_file)
+        if on_step is not None:
+            try:
+                on_step()
+            except Exception:  # noqa: BLE001 - a budget check must never break a task
+                pass
 
         message = response["message"]
         content = message.get("content") or ""

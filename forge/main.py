@@ -20,7 +20,7 @@ from typing import Any
 
 import ollama
 
-from . import gitutil, llm, routing, session, undo, vision
+from . import budget, gitutil, llm, routing, session, undo, vision
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -30,6 +30,7 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /budget          Show session token/compute budget (/budget tokens N, /budget minutes N; 0 or off disables).
   /auto [on|off]   Show or toggle automatic model selection (needs a fast model).
   /fast <name>     Set the fast model used for simple tasks (/fast off to clear).
   /undo [N|list|force]  Revert the last N file changes forge made (default 1). Not for shell-made changes.
@@ -52,6 +53,7 @@ class REPLState:
     plan_mode: bool = False
     pending_images: list[str] = field(default_factory=list)
     auto_model: bool = True
+    budget: budget.BudgetTracker = field(default_factory=budget.BudgetTracker)
     last_model: str | None = None  # model used for the previous task
 
 
@@ -137,6 +139,9 @@ def handle_slash_command(line: str, state: REPLState) -> str:
     if name == "/auto":
         return _handle_auto_command(arg_str, state)
 
+    if name == "/budget":
+        return _handle_budget_command(arg_str, state)
+
     if name == "/fast":
         if not arg_str:
             return "Usage: /fast <name>  (or /fast off)"
@@ -198,6 +203,45 @@ def _handle_image_command(arg_str: str, state: REPLState) -> str:
         f"{len(state.pending_images)} image(s) attached; they'll be described by "
         f"{state.config.vision_model} and sent with your next task."
     )
+
+
+def _session_totals() -> tuple[int, float]:
+    usage = llm.get_usage()
+    return usage["prompt_tokens"] + usage["completion_tokens"], llm.get_compute_seconds()
+
+
+def _handle_budget_command(arg_str: str, state: REPLState) -> str:
+    usage_hint = "Usage: /budget [tokens|minutes <N|off>]"
+    tokens, seconds = _session_totals()
+    parts = arg_str.split()
+
+    if parts:
+        if len(parts) != 2 or parts[0] not in ("tokens", "minutes"):
+            return usage_hint
+        raw = parts[1].lower()
+        try:
+            value = 0.0 if raw == "off" else float(raw)
+        except ValueError:
+            return usage_hint
+        if value < 0:
+            return usage_hint
+        if parts[0] == "tokens":
+            state.budget.set_limits(tokens=int(value), used_tokens=tokens, used_seconds=seconds)
+        else:
+            state.budget.set_limits(minutes=value, used_tokens=tokens, used_seconds=seconds)
+
+    return state.budget.status(tokens, seconds)
+
+
+def _budget_hook(tracker: budget.BudgetTracker, printer: "_LivePrinter") -> Any:
+    """An `on_step` callback: after each model call, warn if a limit is crossed."""
+
+    def check() -> None:
+        tokens, seconds = _session_totals()
+        for notice in tracker.check(tokens, seconds):
+            printer.notice(notice)
+
+    return check
 
 
 def _handle_auto_command(arg_str: str, state: REPLState) -> str:
@@ -345,14 +389,24 @@ class _LivePrinter:
 
     def __init__(self) -> None:
         self.streamed = False
+        self._mid_line = False
 
     def __call__(self, token: str) -> None:
         self.streamed = True
+        self._mid_line = not token.endswith("\n")
         print(token, end="", flush=True)
+
+    def notice(self, text: str) -> None:
+        """A warning on stderr that never lands in the middle of a streamed line."""
+        if self._mid_line:
+            print(flush=True)
+            self._mid_line = False
+        print(f"[budget] {text}", file=sys.stderr, flush=True)
 
     def finish(self, fallback: str = "") -> None:
         if self.streamed:
-            print()
+            if self._mid_line:
+                print()
         elif fallback:
             print(fallback)
 
@@ -364,7 +418,11 @@ def run_repl(
     images: list[str] | None = None,
 ) -> None:
     state = REPLState(
-        config=config, client=client, plan_mode=plan_mode, pending_images=list(images or [])
+        config=config,
+        client=client,
+        plan_mode=plan_mode,
+        pending_images=list(images or []),
+        budget=budget.BudgetTracker(config.budget_tokens, config.budget_minutes),
     )
     print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
     if state.plan_mode:
@@ -423,6 +481,7 @@ def run_repl(
                 usage_file=state.config.usage_file,
                 read_only=state.plan_mode,
                 on_token=printer,
+                on_step=_budget_hook(state.budget, printer),
             )
         except llm.LLMError as e:
             printer.finish()
@@ -448,6 +507,7 @@ def run_once(
     images: list[str] | None = None,
 ) -> int:
     printer = _LivePrinter()
+    tracker = budget.BudgetTracker(config.budget_tokens, config.budget_minutes)
     before = None if plan_mode else gitutil.snapshot(config.working_dir)
     choice = routing.choose_model(
         task, config.model, config.fast_model, images=bool(images), plan_mode=plan_mode
@@ -466,6 +526,7 @@ def run_once(
             usage_file=config.usage_file,
             read_only=plan_mode,
             on_token=printer,
+            on_step=_budget_hook(tracker, printer),
         )
     except llm.LLMError as e:
         printer.finish()

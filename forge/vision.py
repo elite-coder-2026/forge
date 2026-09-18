@@ -11,6 +11,7 @@ conversation history (and saved session) stays plain text.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import httpx
@@ -98,6 +99,7 @@ def describe_images(
         raise VisionError(f"Could not read image: {e}") from e
 
     prompt = f"{DESCRIBE_PROMPT}\n\nThe user's request, for context:\n{task}"
+    started = time.monotonic()
     try:
         response = client.chat(
             model=model, messages=[{"role": "user", "content": prompt, "images": images}]
@@ -111,6 +113,8 @@ def describe_images(
                 f"or set FORGE_VISION_MODEL / vision_model to a vision model you have."
             ) from e
         raise VisionError(f"Vision model {model!r} failed: {type(e).__name__}: {e}") from e
+    finally:
+        llm.add_compute_seconds(time.monotonic() - started)
 
     llm._record_usage(response, usage_file)
 
