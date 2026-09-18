@@ -23,6 +23,7 @@ DEFAULT_MODEL = "qwen2.5-coder"
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_MAX_ITERATIONS = 25
 DEFAULT_SHELL_TIMEOUT = 60
+DEFAULT_VOICE_SECONDS = 30
 # Soft session budgets (see forge/budget.py). 0 disables a limit.
 DEFAULT_BUDGET_TOKENS = 200_000
 DEFAULT_BUDGET_MINUTES = 15.0
@@ -68,6 +69,9 @@ _FILE_KEYS: dict[str, tuple[type, ...]] = {
     "fast_model": (str,),
     "max_iterations": (int,),
     "shell_timeout": (int,),
+    "voice_record": (str,),
+    "voice_transcribe": (str,),
+    "voice_seconds": (int,),
     "budget_tokens": (int,),
     "budget_minutes": (int, float),
     "usage_file": (str,),
@@ -170,6 +174,11 @@ class Config:
     fast_model: str = ""
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     shell_timeout: int = DEFAULT_SHELL_TIMEOUT
+    # Voice input (see forge/voice.py). Empty `voice_record` auto-detects a
+    # recorder; `voice_transcribe` has no default and must be set to use it.
+    voice_record: str = ""
+    voice_transcribe: str = ""
+    voice_seconds: int = DEFAULT_VOICE_SECONDS
     budget_tokens: int = DEFAULT_BUDGET_TOKENS
     budget_minutes: float = DEFAULT_BUDGET_MINUTES
     working_dir: str = "."
@@ -217,6 +226,9 @@ class Config:
             shell_timeout=pick(
                 "FORGE_SHELL_TIMEOUT", "shell_timeout", DEFAULT_SHELL_TIMEOUT, int
             ),
+            voice_record=pick("FORGE_VOICE_RECORD", "voice_record", ""),
+            voice_transcribe=pick("FORGE_VOICE_TRANSCRIBE", "voice_transcribe", ""),
+            voice_seconds=pick("FORGE_VOICE_SECONDS", "voice_seconds", DEFAULT_VOICE_SECONDS, int),
             budget_tokens=pick(
                 "FORGE_BUDGET_TOKENS", "budget_tokens", DEFAULT_BUDGET_TOKENS, int
             ),

@@ -22,7 +22,7 @@ from typing import Any
 
 import ollama
 
-from . import budget, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision, webui
+from . import budget, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision, voice, webui
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -32,6 +32,7 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /voice           Dictate the next task (needs voice_transcribe; see README).
   /plugins         List loaded plugin tools (custom tools from .forge/plugins).
   /mcp             List connected MCP servers and their tools.
   /budget          Show session token/compute budget (/budget tokens N, /budget minutes N; 0 or off disables).
@@ -90,6 +91,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plan",
         action="store_true",
         help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Dictate the task instead of typing it (needs voice_transcribe; see README).",
     )
     parser.add_argument(
         "--web",
@@ -524,6 +530,35 @@ def _start_web(config: Config, port: int) -> webui.Dashboard | None:
     return dashboard
 
 
+def _voice_task(config: Config, confirm: bool = True) -> str | None:
+    """Record, transcribe and (by default) confirm a dictated task.
+
+    Returns the task text, or None if it failed, was cancelled, or the user
+    declined it. The transcript is shown first because speech-to-text
+    mishears, and a wrong task can change files.
+    """
+    limit = max(1, config.voice_seconds)
+    print(f"Listening (up to {limit}s; stop speaking to finish)...", flush=True)
+    try:
+        text = voice.listen(config.voice_record, config.voice_transcribe, limit)
+    except voice.VoiceError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return None
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return None
+
+    print(f'Heard: "{text}"')
+    if not confirm:
+        return text
+    try:
+        answer = input("Send this? [Y/n] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    return text if answer.strip().lower() in ("", "y", "yes") else None
+
+
 def _session_totals() -> tuple[int, float]:
     usage = llm.get_usage()
     return usage["prompt_tokens"] + usage["completion_tokens"], llm.get_compute_seconds()
@@ -772,7 +807,15 @@ def run_repl(
         if not line:
             continue
 
-        if line.startswith("/"):
+        dictated = False
+        if line == "/voice":
+            spoken = _voice_task(state.config)
+            if spoken is None:
+                continue
+            line, dictated = spoken, True
+
+        # A dictated "slash clear" must run as a task, never as a command.
+        if line.startswith("/") and not dictated:
             try:
                 output = handle_slash_command(line, state)
             except REPLExit:
@@ -885,6 +928,18 @@ def main(argv: list[str] | None = None) -> int:
     except vision.VisionError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
+
+    if args.voice:
+        if task is not None or args.interactive:
+            print(
+                "Error: --voice dictates the task, so don't also type one or pass -i "
+                "(inside the REPL, use /voice).",
+                file=sys.stderr,
+            )
+            return 2
+        task = _voice_task(config, confirm=_is_interactive())
+        if task is None:
+            return 1
 
     _start_mcp(config, args.trust_mcp)
     _load_plugins(config, args.trust_plugins)
