@@ -17,12 +17,13 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
 import ollama
 
-from . import budget, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision, voice, webui
+from . import budget, chatui, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision, voice, webui
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -108,6 +109,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=webui.DEFAULT_PORT,
         metavar="PORT",
         help=f"Port for --web (default {webui.DEFAULT_PORT}; 0 picks a free one).",
+    )
+    parser.add_argument(
+        "--chat",
+        action="store_true",
+        help="Serve a chat page on localhost so you can send tasks from a browser (best with -i).",
+    )
+    parser.add_argument(
+        "--chat-port",
+        type=int,
+        default=chatui.DEFAULT_PORT,
+        metavar="PORT",
+        help=f"Port for --chat (default {chatui.DEFAULT_PORT}; 0 picks a free one).",
     )
     parser.add_argument(
         "--trust-plugins",
@@ -528,6 +541,71 @@ def _start_web(config: Config, port: int) -> webui.Dashboard | None:
     atexit.register(dashboard.stop)
     print(f"Dashboard: {dashboard.url} (read-only, localhost only)", file=sys.stderr)
     return dashboard
+
+
+_chat_lock = threading.Lock()  # the browser runs one task at a time
+
+
+def _chat_history() -> list[dict[str, str]]:
+    """The active session's user/assistant turns, for the chat page to show on load."""
+    workspace = _web_workspace
+    if workspace is None:
+        return []
+    return [
+        {"role": m["role"], "content": m["content"]}
+        for m in list(workspace.state.history)
+        if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"]
+    ]
+
+
+def _chat_reply(message: str) -> str:
+    """Run one browser-sent message as a task on the active REPL session.
+
+    Honours the session's plan/build mode and model routing. Errors are
+    raised, so the chat page shows them.
+    """
+    workspace = _web_workspace
+    if workspace is None:
+        raise RuntimeError("forge isn't ready yet")
+    with _chat_lock:
+        state = workspace.state
+        choice = routing.choose_model(
+            message,
+            state.config.model,
+            state.config.fast_model if state.auto_model else "",
+            images=False,
+            plan_mode=state.plan_mode,
+            last=state.last_model,
+        )
+        try:
+            result = llm.run_task(
+                message,
+                state.history,
+                state.client,
+                choice.model,
+                base_dir=state.config.working_dir,
+                shell_timeout=state.config.shell_timeout,
+                max_iterations=state.config.max_iterations,
+                usage_file=state.config.usage_file,
+                read_only=state.plan_mode,
+            )
+        except llm.LLMError as e:
+            raise RuntimeError(_error_message(e, state.config)) from e
+        state.history = result.history
+        state.last_model = choice.model
+        session.save(state.config.session_file, state.history)
+        return result.content
+
+
+def _start_chat(port: int) -> chatui.ChatServer | None:
+    try:
+        server = chatui.ChatServer(_chat_reply, _chat_history, port)
+    except OSError as e:
+        print(f"Chat page not started: could not listen on port {port}: {e}", file=sys.stderr)
+        return None
+    atexit.register(server.stop)
+    print(f"Chat: {server.url} (localhost only; tasks run in the active session)", file=sys.stderr)
+    return server
 
 
 def _voice_task(config: Config, confirm: bool = True) -> str | None:
@@ -995,6 +1073,8 @@ def main(argv: list[str] | None = None) -> int:
     _load_plugins(config, args.trust_plugins)
     if args.web:
         _start_web(config, args.web_port)
+    if args.chat:
+        _start_chat(args.chat_port)
 
     client = ollama.Client(host=config.host)
 
