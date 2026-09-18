@@ -183,6 +183,41 @@ def _extract_tool_call(raw_call: Any) -> tuple[str | None, Any, str | None]:
 # ---------------------------------------------------------------------------
 
 
+def _stream_chat(
+    client: Any,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: Any,
+    on_token: Callable[[str], None],
+) -> dict[str, Any]:
+    """Call `client.chat(stream=True)`, forwarding each content chunk to
+    `on_token` as it arrives, and fold the chunks back into the same
+    response shape a non-streaming call returns so the loop below doesn't
+    care which path produced it.
+    """
+    content_parts: list[str] = []
+    tool_calls: list[Any] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+
+    for chunk in client.chat(model=model, messages=messages, tools=tools, stream=True):
+        message = chunk.get("message") or {}
+        piece = message.get("content") or ""
+        if piece:
+            content_parts.append(piece)
+            on_token(piece)
+        tool_calls.extend(message.get("tool_calls") or [])
+        # Token counts only arrive on the final (done) chunk.
+        prompt_tokens = chunk.get("prompt_eval_count") or prompt_tokens
+        completion_tokens = chunk.get("eval_count") or completion_tokens
+
+    return {
+        "message": {"content": "".join(content_parts), "tool_calls": tool_calls},
+        "prompt_eval_count": prompt_tokens,
+        "eval_count": completion_tokens,
+    }
+
+
 @dataclass
 class TaskResult:
     content: str
@@ -200,6 +235,7 @@ def run_task(
     max_iterations: int = 25,
     usage_file: str | None = None,
     read_only: bool = False,
+    on_token: Callable[[str], None] | None = None,
 ) -> TaskResult:
     """Run one task to completion against `client` (an object exposing a
     `.chat(model=, messages=, tools=)` method — an `ollama.Client` in
@@ -209,6 +245,10 @@ def run_task(
     tools (`read_file`, `list_dir`) and is told to produce a plan instead
     of acting. `call_tool` also refuses write/shell tools defensively, in
     case the model calls one anyway despite it not being offered.
+
+    If `on_token` is given, the response is streamed and each content chunk
+    is passed to it as it arrives; otherwise the call blocks for the full
+    response, as before.
     """
     messages = list(history)
     task_content = (
@@ -225,7 +265,10 @@ def run_task(
 
     for iteration in range(max_iterations):
         try:
-            response = client.chat(model=model, messages=messages, tools=tools)
+            if on_token is not None:
+                response = _stream_chat(client, model, messages, tools, on_token)
+            else:
+                response = client.chat(model=model, messages=messages, tools=tools)
         except Exception as e:
             raise LLMError(f"Model backend call failed: {type(e).__name__}: {e}") from e
 
@@ -249,6 +292,11 @@ def run_task(
 
         if not tool_calls:
             return TaskResult(content=last_content, history=messages, iterations=iteration + 1)
+
+        # Streamed text from this step ends here; break the line so the next
+        # step's text doesn't run into it.
+        if on_token is not None and content:
+            on_token("\n")
 
         for raw_call in tool_calls:
             name, raw_args, error = _extract_tool_call(raw_call)
