@@ -1,10 +1,18 @@
 import os
+import shlex
 import tempfile
 
 import pytest
 
 from forge import main, voice
 from forge.config import Config
+
+@pytest.fixture(autouse=True)
+def _no_builtin_engine_by_default(monkeypatch):
+    """The built-in engine is installed in this venv; most tests mean
+    "nothing configured and nothing to fall back on"."""
+    monkeypatch.setattr(voice, "builtin_available", lambda: False)
+
 
 RECORD = "printf '%s' 'add a docstring to main' > {audio}"  # stands in for a microphone
 TRANSCRIBE = "cat {audio}"  # stands in for whisper: prints the "speech"
@@ -242,7 +250,7 @@ def test_voice_task_reports_errors_and_returns_none(capsys):
 
 
 def test_voice_task_cancelled_with_ctrl_c_while_recording(monkeypatch, capsys):
-    def interrupted(*args):
+    def interrupted(*args, **kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(main.voice, "listen", interrupted)
@@ -350,3 +358,280 @@ def test_voice_flag_conflicts_with_a_typed_task_or_repl(cli, capsys, argv):
 def test_help_and_flag_parsing():
     assert "/voice" in main.HELP_TEXT
     assert main.parse_args(["--voice"])[0].voice is True
+
+
+# --- the built-in transcriber fallback --------------------------------------
+
+
+def test_resolve_transcriber_prefers_the_configured_command(monkeypatch):
+    monkeypatch.setattr(voice, "builtin_available", lambda: True)
+    assert voice.resolve_transcriber("  my-stt {audio}  ") == "my-stt {audio}"
+
+
+def test_resolve_transcriber_falls_back_to_the_builtin_engine(monkeypatch):
+    monkeypatch.setattr(voice, "builtin_available", lambda: True)
+    command = voice.resolve_transcriber("")
+    assert command == voice.builtin_command()
+    assert "-m forge.transcribe {audio}" in command and command.startswith(("/", "'"))
+
+
+def test_resolve_transcriber_without_any_engine_names_both_options():
+    with pytest.raises(voice.VoiceError) as exc:
+        voice.resolve_transcriber("")
+    assert 'forge[voice]' in str(exc.value) and "voice_transcribe" in str(exc.value)
+
+
+def test_listen_uses_the_builtin_engine_when_nothing_is_configured(monkeypatch):
+    monkeypatch.setattr(voice, "builtin_available", lambda: True)
+    monkeypatch.setattr(voice, "builtin_command", lambda: "cat {audio}")
+    monkeypatch.setattr(voice, "_builtin_model_cached", lambda: True)
+    assert voice.listen(RECORD, "", 5) == "add a docstring to main"
+
+
+def test_first_use_downloads_the_model_before_listening(monkeypatch):
+    events = []
+    monkeypatch.setattr(voice, "builtin_available", lambda: True)
+    monkeypatch.setattr(voice, "builtin_command", lambda: "cat {audio}")
+    monkeypatch.setattr(voice, "_builtin_model_cached", lambda: False)
+    monkeypatch.setattr(voice, "_prefetch_builtin_model", lambda: events.append("prefetch"))
+    voice.listen(
+        "printf '%s' spoken > {audio}; true", "", 5, on_status=lambda m: events.append(m.split(" ")[0].rstrip("."))
+    )
+    assert events == ["First", "prefetch", "Listening", "Transcribing"]
+
+
+def test_a_cached_model_or_a_configured_command_never_downloads(monkeypatch):
+    monkeypatch.setattr(voice, "_prefetch_builtin_model", lambda: pytest.fail("must not download"))
+    monkeypatch.setattr(voice, "builtin_available", lambda: True)
+    monkeypatch.setattr(voice, "builtin_command", lambda: "cat {audio}")
+    monkeypatch.setattr(voice, "_builtin_model_cached", lambda: True)
+    _listen(transcribe="")
+    monkeypatch.setattr(voice, "_builtin_model_cached", lambda: False)
+    _listen(transcribe=TRANSCRIBE)  # the user's own engine: not our download to make
+
+
+def test_prefetch_failure_is_a_clear_error(monkeypatch):
+    class Result:
+        returncode = 1
+
+    monkeypatch.setattr(voice.subprocess, "run", lambda *a, **k: Result())
+    with pytest.raises(voice.VoiceError, match="internet connection"):
+        voice._prefetch_builtin_model()
+    Result.returncode = 0
+    voice._prefetch_builtin_model()  # no error
+
+
+def test_prefetch_when_python_cannot_start(monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("no such interpreter")
+
+    monkeypatch.setattr(voice.subprocess, "run", broken)
+    with pytest.raises(voice.VoiceError, match="could not start"):
+        voice._prefetch_builtin_model()
+
+
+def test_model_cache_detection(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    monkeypatch.delenv("FORGE_WHISPER_MODEL", raising=False)
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda repo, name: "/cache/model.bin")
+    assert voice._builtin_model_cached() is True
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda repo, name: None)
+    assert voice._builtin_model_cached() is False
+
+    def broken(repo, name):
+        raise RuntimeError("cache unreadable")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", broken)
+    assert voice._builtin_model_cached() is True  # unsure: never block
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda repo, name: None)
+    monkeypatch.setenv("FORGE_WHISPER_MODEL", str(tmp_path))  # a local model directory
+    assert voice._builtin_model_cached() is True
+    monkeypatch.setenv("FORGE_WHISPER_MODEL", "someone/custom-model")
+    assert voice._builtin_model_cached() is True
+
+
+# --- Ctrl+C ends a recording early, keeping what was said -------------------
+
+
+class InterruptedProc:
+    """Stands in for a recorder that got Ctrl+C: it finalizes its file, and
+    Python's communicate() raises KeyboardInterrupt the first time."""
+
+    def __init__(self, audio_bytes, returncode=255, second_interrupt=False):
+        self.audio_bytes, self.returncode, self.second_interrupt = audio_bytes, returncode, second_interrupt
+        self.calls = 0
+        self.killed = False
+        self.audio = None
+
+    def communicate(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise KeyboardInterrupt
+        if self.calls == 2 and self.second_interrupt:
+            raise KeyboardInterrupt
+        return "", ""
+
+    def kill(self):
+        self.killed = True
+
+
+def _fake_popen(monkeypatch, proc, audio_bytes):
+    """Only the recorder (marked FAKE-RECORDER) is faked; every other
+    process, such as the transcriber, still runs for real."""
+    real_popen = voice.subprocess.Popen
+
+    def popen(command, **kwargs):
+        if "FAKE-RECORDER" not in command:
+            return real_popen(command, **kwargs)
+        path = shlex.split(command)[1]  # the {audio} path
+        with open(path, "wb") as f:  # what a real recorder does: the file is already on disk
+            f.write(audio_bytes)
+        return proc
+
+    monkeypatch.setattr(voice.subprocess, "Popen", popen)
+
+
+def test_ctrl_c_keeps_the_recording_and_reports_it(monkeypatch, tmp_path):
+    proc = InterruptedProc(b"RIFFdata")
+    _fake_popen(monkeypatch, proc, b"RIFFdata")
+    audio = str(tmp_path / "clip.wav")
+    assert voice.record("rec {audio} # FAKE-RECORDER", audio, 5) is True
+    assert proc.calls == 2 and not proc.killed  # waited for it to finish the file
+
+
+def test_a_normal_finish_reports_not_interrupted(tmp_path):
+    audio = str(tmp_path / "clip.wav")
+    assert voice.record("printf x > {audio}", audio, 5) is False
+
+
+def test_a_second_ctrl_c_kills_the_recorder_but_keeps_the_file(monkeypatch, tmp_path):
+    proc = InterruptedProc(b"RIFFdata", second_interrupt=True)
+    _fake_popen(monkeypatch, proc, b"RIFFdata")
+    assert voice.record("rec {audio} # FAKE-RECORDER", str(tmp_path / "clip.wav"), 5) is True
+    assert proc.killed
+
+
+def test_ctrl_c_before_anything_was_recorded_is_an_error(monkeypatch, tmp_path):
+    proc = InterruptedProc(b"")
+    _fake_popen(monkeypatch, proc, b"")
+    with pytest.raises(voice.VoiceError, match="nothing was recorded"):
+        voice.record("rec {audio} # FAKE-RECORDER", str(tmp_path / "clip.wav"), 5)
+
+
+def test_listen_transcribes_after_an_early_stop(monkeypatch):
+    proc = InterruptedProc(b"add a docstring to main")
+    _fake_popen(monkeypatch, proc, b"add a docstring to main")
+    assert voice.listen("rec {audio} # FAKE-RECORDER", TRANSCRIBE, 5) == "add a docstring to main"
+
+
+def test_status_messages_tell_the_user_what_to_do():
+    messages = []
+    voice.listen(RECORD, TRANSCRIBE, 7, on_status=messages.append)
+    assert messages == ["Listening (up to 7s). Press Ctrl+C when you're done speaking...", "Transcribing..."]
+
+
+# --- forge/transcribe.py ----------------------------------------------------
+
+
+class FakeSegment:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeModel:
+    def transcribe(self, path, **kwargs):
+        self.kwargs = kwargs
+        return [FakeSegment(" add a "), FakeSegment("docstring ")], object()
+
+
+def test_transcribe_file_joins_segments_and_uses_voice_activity_detection(monkeypatch):
+    from forge import transcribe
+
+    model = FakeModel()
+    monkeypatch.setattr(transcribe, "_load", lambda name: model)
+    assert transcribe.transcribe_file("clip.wav") == "add a docstring"
+    assert model.kwargs["vad_filter"] is True
+
+
+def test_transcribe_model_name_comes_from_the_environment(monkeypatch):
+    from forge import transcribe
+
+    monkeypatch.delenv("FORGE_WHISPER_MODEL", raising=False)
+    assert transcribe.model_name() == "base.en"
+    monkeypatch.setenv("FORGE_WHISPER_MODEL", "small.en")
+    assert transcribe.model_name() == "small.en"
+    monkeypatch.setenv("FORGE_WHISPER_MODEL", "  ")
+    assert transcribe.model_name() == "base.en"
+
+
+def test_transcribe_cli(monkeypatch, capsys):
+    from forge import transcribe
+
+    monkeypatch.setattr(transcribe, "_load", lambda name: FakeModel())
+    assert transcribe.main(["clip.wav"]) == 0
+    assert capsys.readouterr().out.strip() == "add a docstring"
+    assert transcribe.main(["--prefetch"]) == 0
+    assert transcribe.main([]) == 2 and transcribe.main(["a", "b"]) == 2
+
+
+def test_transcribe_cli_reports_a_missing_package_and_other_failures(monkeypatch, capsys):
+    from forge import transcribe
+
+    def no_package(name):
+        raise ImportError("faster_whisper")
+
+    monkeypatch.setattr(transcribe, "_load", no_package)
+    assert transcribe.main(["clip.wav"]) == 1
+    assert 'pip install "forge[voice]"' in capsys.readouterr().err
+
+    def broken(name):
+        raise RuntimeError("corrupt model")
+
+    monkeypatch.setattr(transcribe, "_load", broken)
+    assert transcribe.main(["clip.wav"]) == 1
+    assert "RuntimeError: corrupt model" in capsys.readouterr().err
+
+
+# --- the real thing: macOS speech -> built-in engine (skipped elsewhere) ----
+
+
+def _real_engine_ready():
+    import platform
+
+    if platform.system() != "Darwin" or not (shutil_which("say") and shutil_which("ffmpeg")):
+        return False
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("faster_whisper") is None:
+            return False
+        from forge.transcribe import model_name
+
+        from huggingface_hub import try_to_load_from_cache
+
+        return isinstance(try_to_load_from_cache(f"Systran/faster-whisper-{model_name()}", "model.bin"), str)
+    except Exception:
+        return False
+
+
+def shutil_which(name):
+    import shutil
+
+    return shutil.which(name)
+
+
+@pytest.mark.skipif(not _real_engine_ready(), reason="needs macOS say + ffmpeg + a downloaded faster-whisper model")
+def test_real_speech_is_transcribed_by_the_builtin_engine(monkeypatch, tmp_path):
+    import subprocess
+
+    monkeypatch.setattr(voice, "builtin_available", lambda: True)
+    spoken = tmp_path / "speech.wav"
+    subprocess.run(["say", "-o", str(tmp_path / "s.aiff"), "run the tests and fix the failures"], check=True)
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-i", str(tmp_path / "s.aiff"), "-ac", "1", "-ar", "16000", str(spoken)],
+        check=True,
+    )
+    text = voice.listen(f"cp {spoken} " + "{audio}", "", 10)
+    assert "tests" in text.lower() and "failures" in text.lower()
