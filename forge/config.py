@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from . import session
+
 
 DEFAULT_MODEL = "qwen2.5-coder"
 DEFAULT_HOST = "http://localhost:11434"
@@ -35,12 +37,16 @@ class Config:
     shell_timeout: int = DEFAULT_SHELL_TIMEOUT
     working_dir: str = "."
     usage_file: str = DEFAULT_USAGE_FILE
+    # Where the REPL saves/resumes its conversation. Empty disables it;
+    # `from_env` turns it on with a per-project default.
+    session_file: str = ""
     prompt_price_per_1m: float = DEFAULT_PROMPT_PRICE_PER_1M
     completion_price_per_1m: float = DEFAULT_COMPLETION_PRICE_PER_1M
 
     @classmethod
     def from_env(cls) -> "Config":
         """Build a Config, letting environment variables override defaults."""
+        working_dir = os.environ.get("FORGE_WORKING_DIR", ".")
         return cls(
             model=os.environ.get("FORGE_MODEL", DEFAULT_MODEL),
             host=os.environ.get("FORGE_HOST", DEFAULT_HOST),
@@ -50,8 +56,11 @@ class Config:
             shell_timeout=int(
                 os.environ.get("FORGE_SHELL_TIMEOUT", DEFAULT_SHELL_TIMEOUT)
             ),
-            working_dir=os.environ.get("FORGE_WORKING_DIR", "."),
+            working_dir=working_dir,
             usage_file=os.environ.get("FORGE_USAGE_FILE", DEFAULT_USAGE_FILE),
+            session_file=os.environ.get(
+                "FORGE_SESSION_FILE", session.default_path(working_dir)
+            ),
             prompt_price_per_1m=float(
                 os.environ.get("FORGE_PROMPT_PRICE_PER_1M", DEFAULT_PROMPT_PRICE_PER_1M)
             ),

@@ -19,13 +19,13 @@ from typing import Any
 
 import ollama
 
-from . import gitutil, llm
+from . import gitutil, llm, session
 from .config import Config
 
 HELP_TEXT = """\
 Commands:
   /help            Show this help.
-  /clear           Clear the conversation history (starts a new session).
+  /clear           Clear the conversation history and saved session (starts fresh).
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
@@ -105,6 +105,7 @@ def handle_slash_command(line: str, state: REPLState) -> str:
 
     if name == "/clear":
         state.history = llm.new_history()
+        session.clear(state.config.session_file)
         return "History cleared."
 
     if name == "/model":
@@ -247,6 +248,11 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
     if state.plan_mode:
         print("Starting in plan mode (read-only). /build to exit.")
 
+    resumed = session.load(config.session_file)
+    if resumed:
+        state.history = resumed
+        print(f"Resumed previous session ({len(resumed)} messages). /clear starts fresh.")
+
     while True:
         try:
             line = input(_repl_prompt(state))
@@ -287,6 +293,7 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
             continue
 
         state.history = result.history
+        session.save(state.config.session_file, state.history)
         printer.finish(fallback=result.content)
         _git_report(before, line, interactive=True)
 
