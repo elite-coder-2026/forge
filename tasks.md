@@ -23,7 +23,7 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 - [x] Persistent session across restarts
 
 ## 🟡 Good to have
-- [ ] LSP integration
+- [x] LSP integration
 - [ ] Vision support (image-to-code)
 - [ ] Undo / rollback (`/undo`)
 - [ ] Auto model selection by task size
