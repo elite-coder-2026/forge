@@ -154,31 +154,41 @@ files are named, lists, tracebacks), so it costs no extra model call.
 
 Dictate a task instead of typing it: `/voice` in the REPL, or
 `forge --voice` for a one-shot run. forge shows what it heard and asks
-`Send this? [Y/n]` before running it, because speech-to-text mishears and a
-wrong task can change files. A dictated task always runs as a task, even if
-it starts with "slash".
+`Send this? [Y/n]` before running it, because speech-to-text mishears (it
+may hear "add" as "at") and a wrong task can change files. A dictated task
+always runs as a task, even if it starts with "slash".
 
-It's local and tool-agnostic: forge records with what you have installed
-(sox's `rec`, `arecord`, or `ffmpeg`, auto-detected; `brew install sox` is
-the easiest, and it stops on its own after two seconds of silence) and
-hands the clip to a speech-to-text command you provide. There's no default
-transcriber, so set one in `forge.toml`:
+**Setup (one time):**
+
+```bash
+pip install "forge[voice]"     # offline speech-to-text, nothing else to configure
+```
+
+The first `/voice` downloads the speech model (about 150 MB, with a
+progress bar) *before* it starts listening; after that it's instant and
+fully offline. Choose a different model with `FORGE_WHISPER_MODEL` (e.g.
+`small.en` for accuracy, `tiny.en` for speed).
+
+**Using it:** speak, then press **Ctrl+C** when you're done; forge keeps
+what you said and transcribes it. (With sox installed it also stops by
+itself after two seconds of silence.) On macOS your terminal needs
+microphone permission (System Settings > Privacy & Security > Microphone).
+The recording is a temporary file deleted right after transcription.
+
+**Recorders:** auto-detected from `rec` (sox, `brew install sox`),
+`arecord`, or `ffmpeg`. **Your own engine:** set `voice_transcribe` to any
+command that prints the transcript, and forge uses it instead of the
+built-in one:
 
 ```toml
-# whisper.cpp, fully offline
 voice_transcribe = "whisper-cli -m ~/models/ggml-base.en.bin -f {audio} -nt"
-# optional
-voice_record = "rec -q -r 16000 -c 1 {audio} silence 1 0.1 3% 1 2.0 3% trim 0 {seconds}"
+voice_record = "rec -q -r 16000 -c 1 {audio} silence 1 0.1 3% 1 2.0 3% trim 0 {seconds}"  # optional
 voice_seconds = 30       # maximum recording length
 ```
 
-`{audio}` is the WAV path and `{seconds}` the length limit; the command
-prints the transcript on stdout (timestamps and `[BLANK_AUDIO]` markers are
-stripped). Env vars: `FORGE_VOICE_TRANSCRIBE`, `FORGE_VOICE_RECORD`,
-`FORGE_VOICE_SECONDS`. The recording is a temporary file deleted right
-after transcription. On macOS your terminal needs microphone permission
-(System Settings > Privacy & Security > Microphone). Ctrl+C while
-listening cancels.
+`{audio}` is the WAV path and `{seconds}` the length limit (timestamps and
+`[BLANK_AUDIO]` markers in the output are stripped). Env vars:
+`FORGE_VOICE_TRANSCRIBE`, `FORGE_VOICE_RECORD`, `FORGE_VOICE_SECONDS`.
 
 ### Web dashboard
 
