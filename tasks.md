@@ -16,11 +16,11 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 
 ## 🔴 Must-haves (in order of attack)
 - [x] Streaming output (`llm.py` + tests)
-  - [x] Wire `on_token` into the CLI/REPL so it prints live
+- [x] Wire `on_token` into the CLI/REPL so it prints live
 - [x] Ollama-unreachable error handling
-- [ ] Git awareness (diff summary / auto-commit)
+- [x] Git awareness (diff summary / auto-commit)
 - [ ] Config file (`forge.toml`)
-- [ ] Persistent session across restarts
+- [x] Persistent session across restarts
 
 ## 🟡 Good to have
 - [ ] LSP integration
