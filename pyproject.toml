@@ -11,6 +11,7 @@ readme = "README.md"
 dependencies = [
     "ollama>=0.3.0",
     "prompt_toolkit>=3.0",
+    "jinja2>=3.1",
     "tomli>=2.0; python_version < '3.11'",
 ]
 
@@ -32,3 +33,6 @@ forge = "forge.main:main"
 
 [tool.setuptools.packages.find]
 include = ["forge*"]
+
+[tool.setuptools.package-data]
+forge = ["templates/*.html"]
