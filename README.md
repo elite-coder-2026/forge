@@ -150,6 +150,41 @@ files are named, lists, tracebacks), so it costs no extra model call.
   model, and `/model <name>` or `--model` count as an explicit choice and
   turn routing off. Without a fast model, nothing changes.
 
+### Plugins (custom tools)
+
+Add your own tools without editing forge. Put a `.py` file in
+`~/.forge/plugins/` (yours, always loaded) or `<project>/.forge/plugins/`
+(shared with the repo, loaded after approval) and register tools with
+`@tool`:
+
+```python
+import os
+from forge.plugins import tool
+
+@tool(
+    description="Count the lines in a file.",
+    parameters={"path": {"type": "string", "description": "File to count."}},
+    read_only=True,          # also offer it in plan mode
+)
+def count_lines(base_dir, path):
+    with open(os.path.join(base_dir, path)) as f:
+        return f"{sum(1 for _ in f)} lines"
+```
+
+The function gets the project directory first, then the arguments the
+model chose, and returns text (`required` defaults to all parameters;
+`name=` overrides the function name). Errors come back to the model as
+`Error: ...` instead of crashing forge, results are truncated at 20,000
+characters, and a broken file is reported and skipped. `/plugins` lists
+what's loaded.
+
+Plugins are ordinary code running inside forge, with no sandbox or
+timeout. Because of that, project plugins can't load unasked: forge lists
+the files and asks once (or pass `--trust-plugins`), remembers that
+approval for exactly those file contents, and asks again if any change.
+Files starting with `_` are ignored, and a plugin can't reuse a built-in
+tool's name.
+
 ### Multiple sessions
 
 One REPL can work in several project directories without restarting:

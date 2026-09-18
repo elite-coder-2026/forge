@@ -21,7 +21,7 @@ from typing import Any
 
 import ollama
 
-from . import budget, gitutil, llm, mcp, routing, session, undo, vision
+from . import budget, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -31,6 +31,7 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /plugins         List loaded plugin tools (custom tools from .forge/plugins).
   /mcp             List connected MCP servers and their tools.
   /budget          Show session token/compute budget (/budget tokens N, /budget minutes N; 0 or off disables).
   /auto [on|off]   Show or toggle automatic model selection (needs a fast model).
@@ -88,6 +89,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plan",
         action="store_true",
         help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
+    parser.add_argument(
+        "--trust-plugins",
+        action="store_true",
+        help="Approve this project's .forge/plugins without asking (remembered until they change).",
     )
     parser.add_argument(
         "--trust-mcp",
@@ -167,6 +173,12 @@ def handle_slash_command(line: str, state: REPLState) -> str:
     if name in ("/session", "/sessions"):
         return _handle_session_command(arg_str, state)
 
+    if name == "/plugins":
+        registry = plugins.get_registry()
+        if registry is None:
+            return "No plugins loaded (add .py files to ~/.forge/plugins or <project>/.forge/plugins)."
+        return registry.describe()
+
     if name == "/mcp":
         manager = mcp.get_manager()
         if manager is None:
@@ -238,6 +250,60 @@ def _handle_image_command(arg_str: str, state: REPLState) -> str:
 
 def _is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _load_plugins(config: Config, trust_flag: bool) -> None:
+    """Load ~/.forge/plugins (yours) and, once approved, <project>/.forge/plugins.
+
+    Project plugins are code that runs inside forge, so a repo can't
+    supply them unasked: approval is prompted once (or `--trust-plugins`),
+    remembered for exactly those file contents, and asked again if they
+    change. Status goes to stderr so stdout stays clean.
+    """
+    project_dir = os.path.join(config.working_dir, plugins.PROJECT_PLUGIN_SUBDIR)
+    project_files = plugins.plugin_files(project_dir)
+    user_files = plugins.plugin_files(plugins.USER_PLUGIN_DIR)
+    if not project_files and not user_files:
+        return
+
+    load_project = False
+    if project_files:
+        if plugins.is_trusted(config.working_dir, project_dir):
+            load_project = True
+        elif trust_flag:
+            plugins.trust(config.working_dir, project_dir)
+            load_project = True
+        elif _is_interactive():
+            print("This project has plugins that would run inside forge:", file=sys.stderr)
+            for path in project_files:
+                print(f"  {os.path.relpath(path, config.working_dir)}", file=sys.stderr)
+            try:
+                answer = input("Load them? [y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer.strip().lower() in ("y", "yes"):
+                plugins.trust(config.working_dir, project_dir)
+                load_project = True
+            else:
+                print("Project plugins not loaded.", file=sys.stderr)
+        else:
+            print(
+                "Project plugins in .forge/plugins were not loaded: they haven't been approved. "
+                "Run forge interactively once to approve them, or pass --trust-plugins.",
+                file=sys.stderr,
+            )
+
+    registry = plugins.PluginRegistry()
+    reserved = {s["function"]["name"] for s in tools.TOOL_SCHEMAS}
+    registry.load(plugins.USER_PLUGIN_DIR, reserved)
+    if load_project:
+        registry.load(project_dir, reserved)
+    plugins.set_registry(registry)
+
+    if registry.tools:
+        print(f"Plugins: loaded {', '.join(registry.tools)}", file=sys.stderr)
+    for path, error in registry.errors.items():
+        print(f"Plugins: {os.path.basename(path)} failed to load: {error}", file=sys.stderr)
 
 
 def _start_mcp(config: Config, trust_flag: bool) -> None:
@@ -731,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     _start_mcp(config, args.trust_mcp)
+    _load_plugins(config, args.trust_plugins)
 
     client = ollama.Client(host=config.host)
 
