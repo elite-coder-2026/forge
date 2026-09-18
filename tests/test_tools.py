@@ -314,7 +314,15 @@ def test_tool_schemas_for_full_access_returns_everything():
 
 def test_tool_schemas_for_read_only_excludes_write_tools():
     names = {s["function"]["name"] for s in tool_schemas_for(read_only=True)}
-    assert names == {"read_file", "list_dir"}
+    # Language-server tools only inspect code, so plan mode keeps them.
+    assert names == {
+        "read_file",
+        "list_dir",
+        "find_definition",
+        "find_references",
+        "hover",
+        "get_diagnostics",
+    }
 
 
 def test_call_tool_read_only_allows_read_file(tmp_path):

@@ -16,6 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pyright",
+]
+lsp = [
+    "pyright",
 ]
 
 [project.scripts]

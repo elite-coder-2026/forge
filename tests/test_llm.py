@@ -267,7 +267,9 @@ def test_run_task_plan_mode_offers_only_read_only_tools():
         "do a thing", llm.new_history(), client, model="test-model", read_only=True
     )
 
-    assert seen_tool_names == [{"read_file", "list_dir"}]
+    assert seen_tool_names == [
+        {"read_file", "list_dir", "find_definition", "find_references", "hover", "get_diagnostics"}
+    ]
 
 
 def test_run_task_plan_mode_prefixes_task_with_read_only_note():
@@ -323,7 +325,14 @@ def test_run_task_full_mode_offers_all_tools():
     llm.run_task("do a thing", llm.new_history(), client, model="test-model")
 
     assert seen_tool_names == [
-        {"read_file", "write_file", "edit_file", "list_dir", "run_shell"}
+        {
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_dir",
+            "run_shell",
+            "find_definition", "find_references", "hover", "get_diagnostics",
+        }
     ]
 
 

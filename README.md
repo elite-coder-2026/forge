@@ -48,6 +48,18 @@ Environment variables (all optional):
 | `FORGE_PROMPT_PRICE_PER_1M` | `0.30` | $/1M prompt tokens used to estimate savings in `/usage` |
 | `FORGE_COMPLETION_PRICE_PER_1M` | `0.80` | $/1M completion tokens used to estimate savings in `/usage` |
 
+### Language-server tools (LSP)
+
+For Python files, forge gives the model four semantic tools backed by a
+language server (pyright): `find_definition`, `find_references`, `hover`
+(type + docstring) and `get_diagnostics` (type-check a file). Positions
+are 1-based `line`/`column`. They're read-only, so they work in plan mode.
+
+Install the server with `pip install "forge[lsp]"` (or `pip install
+pyright`). forge also finds it in the same virtualenv as forge itself.
+Set `FORGE_LSP_COMMAND` to use a different server command. Without a
+server, the tools return an error telling the model how to install it.
+
 ### Project config file
 
 Put a `forge.toml` in the project directory (`FORGE_WORKING_DIR`, default

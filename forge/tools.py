@@ -12,6 +12,8 @@ import os
 import subprocess
 from typing import Any
 
+from . import lsp
+
 
 class ToolError(Exception):
     """A tool-level failure that should be reported back to the model."""
@@ -140,6 +142,135 @@ def run_shell(base_dir: str, command: str, timeout: int = 60) -> str:
 # Schemas + dispatcher
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Language-server tools (semantic code intelligence)
+# ---------------------------------------------------------------------------
+
+_MAX_LOCATIONS = 50
+_MAX_DIAGNOSTICS = 100
+
+
+def _lsp_target(base_dir: str, path: str) -> str:
+    target = _safe_path(base_dir, path)
+    if not os.path.isfile(target):
+        raise ToolError(f"Not a file: {path!r}")
+    if os.path.splitext(target)[1] not in lsp.PYTHON_EXTENSIONS:
+        raise ToolError("Only Python (.py/.pyi) files are supported by the language server")
+    return target
+
+
+def _position_arg(value: Any, name: str) -> int:
+    """Models often send numbers as strings; accept those, reject the rest."""
+    if isinstance(value, bool):
+        raise ToolError(f"{name} must be a positive integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ToolError(f"{name} must be a positive integer, got {value!r}")
+    if number < 1:
+        raise ToolError(f"{name} must be 1 or greater (positions are 1-based)")
+    return number
+
+
+def _client(base_dir: str) -> lsp.LSPClient:
+    try:
+        return lsp.get_client(base_dir)
+    except lsp.LSPError as e:
+        raise ToolError(str(e))
+
+
+def _display_path(base_dir: str, path: str) -> str:
+    base_real = os.path.realpath(base_dir)
+    try:
+        if os.path.commonpath([base_real, path]) == base_real:
+            return os.path.relpath(path, base_real)
+    except ValueError:
+        pass
+    return path
+
+
+def _source_line(path: str, line: int) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for number, text in enumerate(f, start=1):
+                if number == line:
+                    return text.strip()[:120]
+    except (OSError, UnicodeDecodeError):
+        pass
+    return ""
+
+
+def _format_locations(base_dir: str, locations: list[dict[str, Any]], empty: str) -> str:
+    if not locations:
+        return empty
+    lines = []
+    for loc in locations[:_MAX_LOCATIONS]:
+        path = lsp.uri_to_path(loc["uri"])
+        snippet = _source_line(path, loc["line"])
+        where = f"{_display_path(base_dir, path)}:{loc['line']}:{loc['column']}"
+        lines.append(f"{where}  {snippet}".rstrip())
+    if len(locations) > _MAX_LOCATIONS:
+        lines.append(f"... and {len(locations) - _MAX_LOCATIONS} more")
+    return "\n".join(lines)
+
+
+def find_definition(base_dir: str, path: str, line: Any, column: Any) -> str:
+    target = _lsp_target(base_dir, path)
+    line, column = _position_arg(line, "line"), _position_arg(column, "column")
+    try:
+        locations = _client(base_dir).definition(target, line, column)
+    except lsp.LSPError as e:
+        raise ToolError(str(e))
+    return _format_locations(base_dir, locations, "No definition found at that position")
+
+
+def find_references(base_dir: str, path: str, line: Any, column: Any) -> str:
+    target = _lsp_target(base_dir, path)
+    line, column = _position_arg(line, "line"), _position_arg(column, "column")
+    try:
+        locations = _client(base_dir).references(target, line, column)
+    except lsp.LSPError as e:
+        raise ToolError(str(e))
+    return _format_locations(base_dir, locations, "No references found at that position")
+
+
+def hover(base_dir: str, path: str, line: Any, column: Any) -> str:
+    target = _lsp_target(base_dir, path)
+    line, column = _position_arg(line, "line"), _position_arg(column, "column")
+    try:
+        text = _client(base_dir).hover(target, line, column)
+    except lsp.LSPError as e:
+        raise ToolError(str(e))
+    return text or "No hover information at that position"
+
+
+def get_diagnostics(base_dir: str, path: str) -> str:
+    target = _lsp_target(base_dir, path)
+    try:
+        diagnostics = _client(base_dir).diagnostics(target)
+    except lsp.LSPError as e:
+        raise ToolError(str(e))
+    if not diagnostics:
+        return "No diagnostics: no errors or warnings"
+
+    diagnostics = sorted(
+        diagnostics,
+        key=lambda d: (d["range"]["start"]["line"], d["range"]["start"]["character"]),
+    )
+    shown = _display_path(base_dir, target)
+    lines = []
+    for d in diagnostics[:_MAX_DIAGNOSTICS]:
+        start = d["range"]["start"]
+        severity = lsp.SEVERITIES.get(d.get("severity", 1), "error")
+        code = f" [{d['code']}]" if d.get("code") else ""
+        lines.append(
+            f"{shown}:{start['line'] + 1}:{start['character'] + 1} {severity}: {d['message']}{code}"
+        )
+    if len(diagnostics) > _MAX_DIAGNOSTICS:
+        lines.append(f"... and {len(diagnostics) - _MAX_DIAGNOSTICS} more")
+    return "\n".join(lines)
+
+
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -214,6 +345,68 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_definition",
+            "description": "Go to the definition of the symbol at a position in a Python file (semantic, via the language server).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Python file path, relative to the working directory."},
+                    "line": {"type": "integer", "description": "1-based line number."},
+                    "column": {"type": "integer", "description": "1-based column number."},
+                },
+                "required": ["path", "line", "column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_references",
+            "description": "Find every reference to the symbol at a position in a Python file (semantic, via the language server).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Python file path, relative to the working directory."},
+                    "line": {"type": "integer", "description": "1-based line number."},
+                    "column": {"type": "integer", "description": "1-based column number."},
+                },
+                "required": ["path", "line", "column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hover",
+            "description": "Get the type and docstring of the symbol at a position in a Python file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Python file path, relative to the working directory."},
+                    "line": {"type": "integer", "description": "1-based line number."},
+                    "column": {"type": "integer", "description": "1-based column number."},
+                },
+                "required": ["path", "line", "column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_diagnostics",
+            "description": "Type-check a Python file and list its errors and warnings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Python file path, relative to the working directory."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -222,11 +415,22 @@ _DISPATCH = {
     "edit_file": edit_file,
     "list_dir": list_dir,
     "run_shell": run_shell,
+    "find_definition": find_definition,
+    "find_references": find_references,
+    "hover": hover,
+    "get_diagnostics": get_diagnostics,
 }
 
 # Tools that only inspect the repo, never change it or run arbitrary code.
 # Plan mode restricts the model to this set.
-READ_ONLY_TOOLS = {"read_file", "list_dir"}
+READ_ONLY_TOOLS = {
+    "read_file",
+    "list_dir",
+    "find_definition",
+    "find_references",
+    "hover",
+    "get_diagnostics",
+}
 
 
 def tool_schemas_for(read_only: bool) -> list[dict[str, Any]]:
