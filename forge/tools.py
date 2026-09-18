@@ -12,7 +12,7 @@ import os
 import subprocess
 from typing import Any
 
-from . import lsp
+from . import lsp, undo
 
 
 class ToolError(Exception):
@@ -64,13 +64,23 @@ def read_file(base_dir: str, path: str) -> str:
         return f.read()
 
 
+def _read_bytes(target: str) -> bytes | None:
+    """The file's current bytes, or None if there's no such file."""
+    if not os.path.isfile(target):
+        return None
+    with open(target, "rb") as f:
+        return f.read()
+
+
 def write_file(base_dir: str, path: str, content: str) -> str:
     target = _safe_path(base_dir, path)
+    before = _read_bytes(target)
     parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)
     with open(target, "w", encoding="utf-8") as f:
         f.write(content)
+    undo.record(target, before, _read_bytes(target))
     return f"Wrote {len(content)} bytes to {path}"
 
 
@@ -92,8 +102,10 @@ def edit_file(base_dir: str, path: str, old_str: str, new_str: str) -> str:
         )
 
     new_content = content.replace(old_str, new_str, 1)
+    before = _read_bytes(target)
     with open(target, "w", encoding="utf-8") as f:
         f.write(new_content)
+    undo.record(target, before, _read_bytes(target))
     return f"Edited {path}"
 
 

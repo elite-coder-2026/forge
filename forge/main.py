@@ -20,7 +20,7 @@ from typing import Any
 
 import ollama
 
-from . import gitutil, llm, session, vision
+from . import gitutil, llm, session, undo, vision
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -30,6 +30,7 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /undo [N|list|force]  Revert the last N file changes forge made (default 1). Not for shell-made changes.
   /image <path>    Attach image(s) to the next task (screenshot -> code). /image alone lists; /image clear drops them.
   /plan            Enter plan mode: read-only tools only, no edits or shell commands.
   /build           Exit plan mode: full tool access again.
@@ -135,6 +136,9 @@ def handle_slash_command(line: str, state: REPLState) -> str:
     if name == "/image":
         return _handle_image_command(arg_str, state)
 
+    if name == "/undo":
+        return _handle_undo_command(arg_str, state)
+
     if name == "/plan":
         state.plan_mode = True
         return "Entered plan mode: read-only tools only. /build to exit."
@@ -172,6 +176,27 @@ def _handle_image_command(arg_str: str, state: REPLState) -> str:
         f"{len(state.pending_images)} image(s) attached; they'll be described by "
         f"{state.config.vision_model} and sent with your next task."
     )
+
+
+def _handle_undo_command(arg_str: str, state: REPLState) -> str:
+    tokens = arg_str.split()
+    base_dir = state.config.working_dir
+
+    if tokens == ["list"]:
+        lines = undo.history(base_dir)
+        return "Recent changes (newest first):\n" + "\n".join(f"  {l}" for l in lines) if lines else "Nothing to undo."
+
+    force = "force" in tokens
+    rest = [t for t in tokens if t != "force"]
+    if len(rest) > 1:
+        return "Usage: /undo [N|list|force]"
+    count = 1
+    if rest:
+        if not rest[0].isdigit() or int(rest[0]) < 1:
+            return "Usage: /undo [N|list|force]  (N is a positive number)"
+        count = int(rest[0])
+
+    return "\n".join(undo.undo(base_dir, count, force=force))
 
 
 def _with_images(task: str, images: list[str], config: Config, client: Any) -> str:

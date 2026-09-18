@@ -61,6 +61,18 @@ pyright`). forge also finds it in the same virtualenv as forge itself.
 Set `FORGE_LSP_COMMAND` to use a different server command. Without a
 server, the tools return an error telling the model how to install it.
 
+### Undo
+
+`/undo` in the REPL reverts the last file change forge made: it restores
+the previous contents, or deletes a file forge created. `/undo 3` reverts
+the last three, and `/undo list` shows what can be undone. If a file was
+changed after forge wrote it, `/undo` stops instead of overwriting your
+edits; `/undo force` overrides that.
+
+Limits: it tracks `write_file`/`edit_file` only (not changes made by shell
+commands), and the history lasts for the session, so use git for anything
+older or for one-shot runs.
+
 ### Images (screenshot → code)
 
 Attach a screenshot or mockup and forge builds from it:
