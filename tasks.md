@@ -6,6 +6,6 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 - [x] MCP server support
 - [x] Test-runner integration
 - [x] Multiple concurrent sessions
-- [ ] Plugin/extension system
+- [x] Plugin/extension system
 - [ ] Web dashboard (`--web`)
 - [ ] Voice input
