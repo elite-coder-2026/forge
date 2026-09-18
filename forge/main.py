@@ -20,7 +20,7 @@ from typing import Any
 
 import ollama
 
-from . import budget, gitutil, llm, routing, session, undo, vision
+from . import budget, gitutil, llm, mcp, routing, session, undo, vision
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -30,6 +30,7 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /mcp             List connected MCP servers and their tools.
   /budget          Show session token/compute budget (/budget tokens N, /budget minutes N; 0 or off disables).
   /auto [on|off]   Show or toggle automatic model selection (needs a fast model).
   /fast <name>     Set the fast model used for simple tasks (/fast off to clear).
@@ -71,6 +72,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plan",
         action="store_true",
         help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
+    parser.add_argument(
+        "--trust-mcp",
+        action="store_true",
+        help="Approve the MCP servers in this project's forge.toml without asking (remembered until they change).",
     )
     parser.add_argument(
         "--image",
@@ -142,6 +148,12 @@ def handle_slash_command(line: str, state: REPLState) -> str:
     if name == "/budget":
         return _handle_budget_command(arg_str, state)
 
+    if name == "/mcp":
+        manager = mcp.get_manager()
+        if manager is None:
+            return "No MCP servers connected (declare them as [mcp_servers.<name>] tables in forge.toml)."
+        return manager.describe()
+
     if name == "/fast":
         if not arg_str:
             return "Usage: /fast <name>  (or /fast off)"
@@ -203,6 +215,58 @@ def _handle_image_command(arg_str: str, state: REPLState) -> str:
         f"{len(state.pending_images)} image(s) attached; they'll be described by "
         f"{state.config.vision_model} and sent with your next task."
     )
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _start_mcp(config: Config, trust_flag: bool) -> None:
+    """Launch the MCP servers declared in forge.toml, if the user approves.
+
+    A repo's forge.toml names programs to run, so it can't start them on
+    its own: approval is asked once (interactively) or given with
+    `--trust-mcp`, remembered for exactly these definitions, and asked
+    again if they change. Status goes to stderr so stdout stays clean.
+    """
+    if not config.mcp_servers:
+        return
+
+    if not mcp.is_trusted(config.working_dir, config.mcp_servers):
+        if trust_flag:
+            mcp.trust(config.working_dir, config.mcp_servers)
+        elif _is_interactive():
+            print("This project's forge.toml wants to run these MCP servers:", file=sys.stderr)
+            for name, server in config.mcp_servers.items():
+                print(f"  {name}: {' '.join([server.command, *server.args])}", file=sys.stderr)
+            try:
+                answer = input("Allow them? [y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer.strip().lower() not in ("y", "yes"):
+                print("MCP servers not started.", file=sys.stderr)
+                return
+            mcp.trust(config.working_dir, config.mcp_servers)
+        else:
+            print(
+                "MCP servers in forge.toml were not started: they haven't been approved. "
+                "Run forge interactively once to approve them, or pass --trust-mcp.",
+                file=sys.stderr,
+            )
+            return
+
+    manager = mcp.MCPManager()
+    manager.start(config.mcp_servers, config.working_dir)
+    mcp.set_manager(manager)
+
+    connected = [
+        f"{name} ({sum(1 for t in manager.tools.values() if t.server == name)} tools)"
+        for name in manager.clients
+    ]
+    if connected:
+        print(f"MCP: connected {', '.join(connected)}", file=sys.stderr)
+    for name, error in manager.errors.items():
+        print(f"MCP: server {name!r} failed to start: {error}", file=sys.stderr)
 
 
 def _session_totals() -> tuple[int, float]:
@@ -558,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
     except vision.VisionError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
+
+    _start_mcp(config, args.trust_mcp)
 
     client = ollama.Client(host=config.host)
 

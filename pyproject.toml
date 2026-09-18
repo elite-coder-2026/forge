@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pyright",
+    "mcp",  # a real server for the MCP integration test (skipped if absent)
 ]
 lsp = [
     "pyright",

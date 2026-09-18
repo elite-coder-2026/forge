@@ -64,6 +64,37 @@ pyright`). forge also finds it in the same virtualenv as forge itself.
 Set `FORGE_LSP_COMMAND` to use a different server command. Without a
 server, the tools return an error telling the model how to install it.
 
+### MCP servers
+
+forge can use tools from any [Model Context Protocol](https://modelcontextprotocol.io)
+server (filesystem, GitHub, databases, ...) over stdio. Declare them in
+`forge.toml`:
+
+```toml
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+[mcp_servers.github]
+command = "github-mcp-server"
+timeout = 120            # seconds per request (default 60)
+[mcp_servers.github.env]
+GITHUB_TOKEN = "${GITHUB_TOKEN}"   # ${VAR} is filled in from your shell
+```
+
+- Server tools reach the model as `mcp__<server>__<tool>`, alongside the
+  built-in ones. `/mcp` lists what's connected.
+- **Approval:** a `forge.toml` names programs to run, so a repo can't start
+  them on its own. The first time, forge shows the commands and asks; pass
+  `--trust-mcp` to approve without a prompt (needed for non-interactive
+  runs). Approval is remembered for exactly those definitions and asked
+  again if they change.
+- **Plan mode** only offers tools the server marks `readOnlyHint`.
+- One server failing to start is reported and skipped; the rest still work.
+  Large results are truncated at 20,000 characters, and image/audio
+  results are noted but not passed to the model.
+- Only the stdio transport is supported (no HTTP/SSE servers yet).
+
 ### Budget alerts
 
 Local models cost no money per token, but a runaway session burns real

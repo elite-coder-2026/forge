@@ -7,7 +7,8 @@ Precedence, highest first: CLI flags, environment variables, a
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Any
 
 try:
@@ -48,6 +49,16 @@ class ConfigError(Exception):
     """`forge.toml` exists but can't be used (bad TOML, unknown key, wrong type)."""
 
 
+@dataclass
+class MCPServerConfig:
+    """One `[mcp_servers.<name>]` table: an MCP server forge launches over stdio."""
+
+    command: str
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    timeout: float = 60.0
+
+
 # Keys allowed in forge.toml, with the type each must be. (The working
 # directory isn't one: it's what locates the file in the first place.)
 _FILE_KEYS: dict[str, tuple[type, ...]] = {
@@ -61,6 +72,7 @@ _FILE_KEYS: dict[str, tuple[type, ...]] = {
     "budget_minutes": (int, float),
     "usage_file": (str,),
     "session_file": (str,),
+    "mcp_servers": (dict,),
     "prompt_price_per_1m": (int, float),
     "completion_price_per_1m": (int, float),
 }
@@ -96,7 +108,48 @@ def load_project_file(working_dir: str) -> dict[str, Any]:
         if isinstance(value, bool) or not isinstance(value, allowed):
             names = " or ".join(t.__name__ for t in allowed)
             raise ConfigError(f"{path}: '{key}' must be {names}, got {value!r}")
+
+    if "mcp_servers" in data:
+        _parse_mcp_servers(path, data["mcp_servers"])
     return data
+
+
+_SERVER_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_SERVER_KEYS = {"command", "args", "env", "timeout"}
+
+
+def _parse_mcp_servers(path: str, raw: dict[str, Any]) -> dict[str, MCPServerConfig]:
+    """Validate the `[mcp_servers.*]` tables and build their configs."""
+    servers: dict[str, MCPServerConfig] = {}
+    for name, table in raw.items():
+        where = f"{path}: mcp_servers.{name}"
+        if not _SERVER_NAME.match(name):
+            raise ConfigError(f"{where}: server names use letters, digits, '_' and '-' (max 32)")
+        if not isinstance(table, dict):
+            raise ConfigError(f"{where} must be a table")
+        unknown = sorted(set(table) - _SERVER_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"{where}: unknown key(s): {', '.join(unknown)}. Valid keys: {', '.join(sorted(_SERVER_KEYS))}"
+            )
+
+        command = table.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ConfigError(f"{where}: 'command' is required and must be a string")
+        args = table.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise ConfigError(f"{where}: 'args' must be a list of strings")
+        env = table.get("env", {})
+        if not isinstance(env, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+        ):
+            raise ConfigError(f"{where}: 'env' must be a table of strings")
+        timeout = table.get("timeout", 60.0)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ConfigError(f"{where}: 'timeout' must be a positive number of seconds")
+
+        servers[name] = MCPServerConfig(command, list(args), dict(env), float(timeout))
+    return servers
 
 
 def _resolve_path(value: str, working_dir: str) -> str:
@@ -126,6 +179,8 @@ class Config:
     session_file: str = ""
     prompt_price_per_1m: float = DEFAULT_PROMPT_PRICE_PER_1M
     completion_price_per_1m: float = DEFAULT_COMPLETION_PRICE_PER_1M
+    # MCP servers to launch (forge.toml only; see forge/mcp.py).
+    mcp_servers: dict[str, MCPServerConfig] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -169,6 +224,9 @@ class Config:
             usage_file=pick_path("FORGE_USAGE_FILE", "usage_file", DEFAULT_USAGE_FILE),
             session_file=pick_path(
                 "FORGE_SESSION_FILE", "session_file", session.default_path(working_dir)
+            ),
+            mcp_servers=_parse_mcp_servers(
+                os.path.join(working_dir, CONFIG_FILENAME), file.get("mcp_servers", {})
             ),
             prompt_price_per_1m=pick(
                 "FORGE_PROMPT_PRICE_PER_1M",

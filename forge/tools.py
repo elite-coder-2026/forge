@@ -12,7 +12,7 @@ import os
 import subprocess
 from typing import Any
 
-from . import lsp, undo
+from . import lsp, mcp, undo
 
 
 class ToolError(Exception):
@@ -449,9 +449,14 @@ def tool_schemas_for(read_only: bool) -> list[dict[str, Any]]:
     """The tool schemas to hand the model: all of them normally, or just
     the read-only ones in plan mode.
     """
-    if not read_only:
-        return TOOL_SCHEMAS
-    return [s for s in TOOL_SCHEMAS if s["function"]["name"] in READ_ONLY_TOOLS]
+    builtin = (
+        TOOL_SCHEMAS
+        if not read_only
+        else [s for s in TOOL_SCHEMAS if s["function"]["name"] in READ_ONLY_TOOLS]
+    )
+    manager = mcp.get_manager()
+    extra = manager.schemas(read_only) if manager else []
+    return builtin + extra if extra else builtin
 
 
 def call_tool(
@@ -475,6 +480,17 @@ def call_tool(
     """
     if read_only and name not in READ_ONLY_TOOLS and name in _DISPATCH:
         return f"Error: {name!r} is not allowed in plan mode (read-only). Exit plan mode with /build to make changes."
+
+    manager = mcp.get_manager()
+    if manager is not None and manager.has_tool(name):
+        if read_only and not manager.is_read_only(name):
+            return f"Error: {name!r} is not allowed in plan mode (it isn't marked read-only). Exit plan mode with /build to use it."
+        try:
+            return manager.call(name, dict(arguments))
+        except mcp.MCPError as e:
+            return f"Error: {e}"
+        except Exception as e:  # noqa: BLE001 - same never-raise contract as below
+            return f"Error: {type(e).__name__}: {e}"
 
     func = _DISPATCH.get(name)
     if func is None:
