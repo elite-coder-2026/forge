@@ -46,6 +46,34 @@ def test_serves_page_with_token_and_csp(server):
     assert "default-src 'none'" in response.getheader("Content-Security-Policy")
 
 
+def test_page_includes_earlier_messages(server):
+    _, data = request(server, "GET", "/")
+    assert '<li class="msg user"><pre>earlier</pre></li>' in data.decode()
+
+
+def test_page_escapes_message_text():
+    hostile = [{"role": "assistant", "content": "<script>alert(1)</script> & <b>x</b>"}]
+    chat = ChatServer(lambda m: "", lambda: hostile, port=0)
+    try:
+        _, data = request(chat, "GET", "/")
+    finally:
+        chat.stop()
+    page = data.decode()
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &lt;b&gt;x&lt;/b&gt;" in page
+
+
+def test_page_reflects_history_changes_between_loads():
+    messages = []
+    chat = ChatServer(lambda m: "", lambda: list(messages), port=0)
+    try:
+        assert "later" not in request(chat, "GET", "/")[1].decode()
+        messages.append({"role": "user", "content": "later"})
+        assert "later" in request(chat, "GET", "/")[1].decode()
+    finally:
+        chat.stop()
+
+
 def test_serves_assets_and_404s_unknown_paths(server):
     assert request(server, "GET", "/chat.js")[0].status == 200
     assert request(server, "GET", "/chat.css")[0].status == 200
