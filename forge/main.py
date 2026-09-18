@@ -180,6 +180,27 @@ def _format_usage(config: Config) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _LivePrinter:
+    """`on_token` callback that prints streamed text as it arrives.
+
+    `finish()` ends the streamed line, or prints `fallback` if nothing was
+    streamed (so the final answer is never printed twice).
+    """
+
+    def __init__(self) -> None:
+        self.streamed = False
+
+    def __call__(self, token: str) -> None:
+        self.streamed = True
+        print(token, end="", flush=True)
+
+    def finish(self, fallback: str = "") -> None:
+        if self.streamed:
+            print()
+        elif fallback:
+            print(fallback)
+
+
 def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
     state = REPLState(config=config, client=client, plan_mode=plan_mode)
     print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
@@ -205,6 +226,7 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
             print(output)
             continue
 
+        printer = _LivePrinter()
         try:
             result = llm.run_task(
                 line,
@@ -216,13 +238,15 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
                 max_iterations=state.config.max_iterations,
                 usage_file=state.config.usage_file,
                 read_only=state.plan_mode,
+                on_token=printer,
             )
         except llm.LLMError as e:
+            printer.finish()
             print(f"Error: {e}")
             continue
 
         state.history = result.history
-        print(result.content)
+        printer.finish(fallback=result.content)
 
 
 def _repl_prompt(state: REPLState) -> str:
@@ -230,6 +254,7 @@ def _repl_prompt(state: REPLState) -> str:
 
 
 def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) -> int:
+    printer = _LivePrinter()
     try:
         result = llm.run_task(
             task,
@@ -241,12 +266,14 @@ def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) ->
             max_iterations=config.max_iterations,
             usage_file=config.usage_file,
             read_only=plan_mode,
+            on_token=printer,
         )
     except llm.LLMError as e:
+        printer.finish()
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    print(result.content)
+    printer.finish(fallback=result.content)
     return 0
 
 
