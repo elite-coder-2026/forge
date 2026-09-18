@@ -538,9 +538,13 @@ def _voice_task(config: Config, confirm: bool = True) -> str | None:
     mishears, and a wrong task can change files.
     """
     limit = max(1, config.voice_seconds)
-    print(f"Listening (up to {limit}s; stop speaking to finish)...", flush=True)
     try:
-        text = voice.listen(config.voice_record, config.voice_transcribe, limit)
+        text = voice.listen(
+            config.voice_record,
+            config.voice_transcribe,
+            limit,
+            on_status=lambda message: print(message, flush=True),
+        )
     except voice.VoiceError as e:
         print(f"Error: {e}", file=sys.stderr)
         return None
