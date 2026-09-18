@@ -208,6 +208,24 @@ DNS-rebinding from other web pages), sends a strict
 Content-Security-Policy with no third-party assets, and renders all data as
 text, never HTML. Long messages are truncated in the view.
 
+### Browser chat
+
+`forge -i --chat` serves a chat page at `http://localhost:8766`
+(`--chat-port N`; `0` picks a free port). Type a task in the browser and
+forge runs it in the active REPL session: same model, plan/build mode,
+history and undo as the terminal. Enter sends, Shift+Enter adds a line.
+It can be combined with `--web`.
+
+Unlike the dashboard it accepts input, and a task can edit files or run
+shell commands, so use `--plan` if you want it read-only. It's locked down:
+`127.0.0.1` only, a `Host` check against DNS rebinding, a per-run secret
+token required on every send, same-origin only, JSON only, a strict
+Content-Security-Policy, and all text rendered as text, never HTML.
+
+Limits: one browser task runs at a time, and there's no live streaming (the
+reply appears when the task finishes). Don't run a task in the terminal and
+the browser at the same moment, since they share one conversation.
+
 ### Plugins (custom tools)
 
 Add your own tools without editing forge. Put a `.py` file in
