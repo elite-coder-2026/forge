@@ -48,6 +48,24 @@ Environment variables (all optional):
 | `FORGE_PROMPT_PRICE_PER_1M` | `0.30` | $/1M prompt tokens used to estimate savings in `/usage` |
 | `FORGE_COMPLETION_PRICE_PER_1M` | `0.80` | $/1M completion tokens used to estimate savings in `/usage` |
 
+### Project config file
+
+Put a `forge.toml` in the project directory (`FORGE_WORKING_DIR`, default
+`.`) so settings travel with the project. Precedence, highest first: CLI
+flags, environment variables, `forge.toml`, built-in defaults.
+
+```toml
+model = "qwen2.5-coder:14b"
+host = "http://localhost:11434"
+max_iterations = 40
+shell_timeout = 120
+```
+
+Other keys: `usage_file`, `session_file` (relative paths are relative to
+the project), `prompt_price_per_1m`, `completion_price_per_1m`. An unknown
+key, wrong type, or invalid TOML is reported as an error instead of being
+ignored.
+
 `/usage`'s default $/1M rates are Together AI's published pricing for
 hosting Qwen2.5-Coder — an open-model hosting price, not a frontier-model
 (GPT-4o/Claude/etc.) price, since that's the realistic alternative to

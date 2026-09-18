@@ -20,7 +20,7 @@ from typing import Any
 import ollama
 
 from . import gitutil, llm, session
-from .config import Config
+from .config import Config, ConfigError
 
 HELP_TEXT = """\
 Commands:
@@ -332,7 +332,11 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     args, task = parse_args(argv)
 
-    config = Config.from_env()
+    try:
+        config = Config.from_env()
+    except ConfigError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
     if args.model:
         config.model = args.model
     if args.host:
