@@ -51,6 +51,7 @@ _FILE_KEYS: dict[str, tuple[type, ...]] = {
     "model": (str,),
     "host": (str,),
     "vision_model": (str,),
+    "fast_model": (str,),
     "max_iterations": (int,),
     "shell_timeout": (int,),
     "usage_file": (str,),
@@ -106,6 +107,9 @@ class Config:
     model: str = DEFAULT_MODEL
     host: str = DEFAULT_HOST
     vision_model: str = DEFAULT_VISION_MODEL
+    # Small, quick model for simple tasks (see forge/routing.py). Empty
+    # disables automatic model selection: everything uses `model`.
+    fast_model: str = ""
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     shell_timeout: int = DEFAULT_SHELL_TIMEOUT
     working_dir: str = "."
@@ -141,6 +145,7 @@ class Config:
             model=pick("FORGE_MODEL", "model", DEFAULT_MODEL),
             host=pick("FORGE_HOST", "host", DEFAULT_HOST),
             vision_model=pick("FORGE_VISION_MODEL", "vision_model", DEFAULT_VISION_MODEL),
+            fast_model=pick("FORGE_FAST_MODEL", "fast_model", ""),
             max_iterations=pick(
                 "FORGE_MAX_ITERATIONS", "max_iterations", DEFAULT_MAX_ITERATIONS, int
             ),

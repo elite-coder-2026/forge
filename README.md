@@ -42,6 +42,7 @@ Environment variables (all optional):
 | `FORGE_MODEL` | `qwen2.5-coder` | Ollama model to use |
 | `FORGE_HOST` | `http://localhost:11434` | Ollama server URL |
 | `FORGE_VISION_MODEL` | `gemma3:12b` | Vision model that describes attached images (`ollama pull` it first) |
+| `FORGE_FAST_MODEL` | *(unset)* | Small, quick model for simple tasks; enables automatic model selection |
 | `FORGE_MAX_ITERATIONS` | `25` | Max tool-call rounds per task |
 | `FORGE_SHELL_TIMEOUT` | `60` | Seconds before a shell command times out |
 | `FORGE_WORKING_DIR` | `.` | Sandbox root for file/shell tools |
@@ -60,6 +61,23 @@ Install the server with `pip install "forge[lsp]"` (or `pip install
 pyright`). forge also finds it in the same virtualenv as forge itself.
 Set `FORGE_LSP_COMMAND` to use a different server command. Without a
 server, the tools return an error telling the model how to install it.
+
+### Automatic model selection
+
+Set a fast model (`FORGE_FAST_MODEL`, `fast_model` in `forge.toml`, or
+`/fast <name>` in the REPL) and forge picks a model per task: quick edits
+and questions go to the fast model, bigger work goes to your main model.
+It's a text heuristic (length, words like "refactor" or "typo", how many
+files are named, lists, tracebacks), so it costs no extra model call.
+
+- Each pick is announced, e.g. `[auto] qwen2.5-coder:7b: quick task`.
+- Borderline tasks and short replies ("yes, do it") stay on the model
+  that's already loaded, since switching models makes Ollama reload
+  weights. With no history, borderline means the main model.
+- Image tasks and plan mode always use the main model.
+- `/auto` shows the status, `/auto off` pins everything to the main
+  model, and `/model <name>` or `--model` count as an explicit choice and
+  turn routing off. Without a fast model, nothing changes.
 
 ### Undo
 

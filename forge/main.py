@@ -20,7 +20,7 @@ from typing import Any
 
 import ollama
 
-from . import gitutil, llm, session, undo, vision
+from . import gitutil, llm, routing, session, undo, vision
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -30,6 +30,8 @@ Commands:
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
+  /auto [on|off]   Show or toggle automatic model selection (needs a fast model).
+  /fast <name>     Set the fast model used for simple tasks (/fast off to clear).
   /undo [N|list|force]  Revert the last N file changes forge made (default 1). Not for shell-made changes.
   /image <path>    Attach image(s) to the next task (screenshot -> code). /image alone lists; /image clear drops them.
   /plan            Enter plan mode: read-only tools only, no edits or shell commands.
@@ -49,6 +51,8 @@ class REPLState:
     history: list[dict[str, Any]] = field(default_factory=llm.new_history)
     plan_mode: bool = False
     pending_images: list[str] = field(default_factory=list)
+    auto_model: bool = True
+    last_model: str | None = None  # model used for the previous task
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +127,25 @@ def handle_slash_command(line: str, state: REPLState) -> str:
         if not arg_str:
             return "Usage: /model <name>"
         state.config.model = arg_str
-        return f"Model set to {arg_str!r}"
+        message = f"Model set to {arg_str!r}"
+        if state.config.fast_model and state.auto_model:
+            # An explicit choice beats automatic routing.
+            state.auto_model = False
+            message += " (auto model selection off; /auto on to re-enable)"
+        return message
+
+    if name == "/auto":
+        return _handle_auto_command(arg_str, state)
+
+    if name == "/fast":
+        if not arg_str:
+            return "Usage: /fast <name>  (or /fast off)"
+        if arg_str == "off":
+            state.config.fast_model = ""
+            return "Fast model cleared; every task uses the main model."
+        state.config.fast_model = arg_str
+        state.auto_model = True
+        return f"Fast model set to {arg_str!r}; simple tasks will use it (main: {state.config.model!r})."
 
     if name == "/pull":
         if not arg_str:
@@ -176,6 +198,28 @@ def _handle_image_command(arg_str: str, state: REPLState) -> str:
         f"{len(state.pending_images)} image(s) attached; they'll be described by "
         f"{state.config.vision_model} and sent with your next task."
     )
+
+
+def _handle_auto_command(arg_str: str, state: REPLState) -> str:
+    config = state.config
+    if arg_str in ("on", "off"):
+        if arg_str == "on" and not config.fast_model:
+            return "No fast model set. Use /fast <name>, or set fast_model in forge.toml / FORGE_FAST_MODEL."
+        state.auto_model = arg_str == "on"
+    elif arg_str:
+        return "Usage: /auto [on|off]"
+
+    if not config.fast_model:
+        return "Auto model selection: not configured (set a fast model with /fast <name>)."
+    if not state.auto_model:
+        return f"Auto model selection: off (using {config.model!r} for everything)."
+    return f"Auto model selection: on (quick tasks: {config.fast_model!r}, larger tasks: {config.model!r})."
+
+
+def _announce_model(choice: routing.Choice, file: Any = None) -> None:
+    """Tell the user which model was picked, but only when routing is active."""
+    if choice.reason:
+        print(f"[auto] {choice.model}: {choice.reason}", file=file or sys.stdout, flush=True)
 
 
 def _handle_undo_command(arg_str: str, state: REPLState) -> str:
@@ -327,6 +371,8 @@ def run_repl(
         print("Starting in plan mode (read-only). /build to exit.")
     if state.pending_images:
         print(f"{len(state.pending_images)} image(s) attached for your first task.")
+    if config.fast_model:
+        print(_handle_auto_command("", state))
 
     resumed = session.load(config.session_file)
     if resumed:
@@ -354,14 +400,23 @@ def run_repl(
 
         printer = _LivePrinter()
         before = None if state.plan_mode else gitutil.snapshot(state.config.working_dir)
+        choice = routing.choose_model(
+            line,
+            state.config.model,
+            state.config.fast_model if state.auto_model else "",
+            images=bool(state.pending_images),
+            plan_mode=state.plan_mode,
+            last=state.last_model,
+        )
         try:
             task_text = _with_images(line, state.pending_images, state.config, state.client)
             state.pending_images = []
+            _announce_model(choice)
             result = llm.run_task(
                 task_text,
                 state.history,
                 state.client,
-                state.config.model,
+                choice.model,
                 base_dir=state.config.working_dir,
                 shell_timeout=state.config.shell_timeout,
                 max_iterations=state.config.max_iterations,
@@ -375,6 +430,7 @@ def run_repl(
             continue
 
         state.history = result.history
+        state.last_model = choice.model
         session.save(state.config.session_file, state.history)
         printer.finish(fallback=result.content)
         _git_report(before, line, interactive=True)
@@ -393,13 +449,17 @@ def run_once(
 ) -> int:
     printer = _LivePrinter()
     before = None if plan_mode else gitutil.snapshot(config.working_dir)
+    choice = routing.choose_model(
+        task, config.model, config.fast_model, images=bool(images), plan_mode=plan_mode
+    )
     try:
         task_text = _with_images(task, images or [], config, client)
+        _announce_model(choice, file=sys.stderr)
         result = llm.run_task(
             task_text,
             llm.new_history(),
             client,
-            config.model,
+            choice.model,
             base_dir=config.working_dir,
             shell_timeout=config.shell_timeout,
             max_iterations=config.max_iterations,
@@ -428,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.model:
         config.model = args.model
+        config.fast_model = ""  # an explicit --model is used as-is, no routing
     if args.host:
         config.host = args.host
 
