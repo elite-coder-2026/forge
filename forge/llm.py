@@ -16,6 +16,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import httpx
+
 from .tools import call_tool, tool_schemas_for
 
 
@@ -24,6 +26,13 @@ class LLMError(Exception):
     backend is unreachable, or returned a response with no usable
     content). Callers should catch this, report it, and let the REPL
     keep running rather than letting it propagate and kill the process.
+    """
+
+
+class OllamaUnreachableError(LLMError):
+    """The model backend couldn't be reached (server down, wrong host, or
+    the connection dropped mid-response). Kept separate from `LLMError` so
+    callers, which know the configured host, can give a clear message.
     """
 
 
@@ -269,6 +278,8 @@ def run_task(
                 response = _stream_chat(client, model, messages, tools, on_token)
             else:
                 response = client.chat(model=model, messages=messages, tools=tools)
+        except (ConnectionError, httpx.TransportError) as e:
+            raise OllamaUnreachableError(f"{type(e).__name__}: {e}") from e
         except Exception as e:
             raise LLMError(f"Model backend call failed: {type(e).__name__}: {e}") from e
 

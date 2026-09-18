@@ -180,6 +180,15 @@ def _format_usage(config: Config) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _error_message(error: llm.LLMError, config: Config) -> str:
+    if isinstance(error, llm.OllamaUnreachableError):
+        return (
+            f"Ollama isn't reachable at {config.host}. "
+            f"Is it running? (start it with `ollama serve`)"
+        )
+    return str(error)
+
+
 class _LivePrinter:
     """`on_token` callback that prints streamed text as it arrives.
 
@@ -242,7 +251,7 @@ def run_repl(config: Config, client: Any, plan_mode: bool = False) -> None:
             )
         except llm.LLMError as e:
             printer.finish()
-            print(f"Error: {e}")
+            print(f"Error: {_error_message(e, state.config)}")
             continue
 
         state.history = result.history
@@ -270,7 +279,7 @@ def run_once(task: str, config: Config, client: Any, plan_mode: bool = False) ->
         )
     except llm.LLMError as e:
         printer.finish()
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {_error_message(e, config)}", file=sys.stderr)
         return 1
 
     printer.finish(fallback=result.content)
