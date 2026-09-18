@@ -8,4 +8,4 @@ Mark `[x]` as each task is completed. Source: `roadmap.md`.
 - [x] Multiple concurrent sessions
 - [x] Plugin/extension system
 - [x] Web dashboard (`--web`)
-- [ ] Voice input
+- [x] Voice input
