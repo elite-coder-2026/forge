@@ -903,6 +903,10 @@ class _LivePrinter:
 
     def notice(self, text: str) -> None:
         """A warning on stderr that never lands in the middle of a streamed line."""
+    def pause(self) -> None:
+        """End the current streamed block so a prompt can print below it."""
+        self._stream.pause()
+
         self._stream.pause()
         ui.emit(f"[budget] {text}", err=True, flush=True)
 
@@ -915,6 +919,45 @@ class _LivePrinter:
 
 def run_repl(
     config: Config,
+def _approval_hook(edit_mode: str, always: set[str], printer: "_LivePrinter") -> Any:
+    """The approval callback for `llm.run_task`, or None when nothing should be
+    asked: dangerous mode never asks, and with no terminal to ask on, tools
+    run as they always did."""
+    if edit_mode == "dangerous" or not _is_interactive():
+        return None
+
+    def ask(name: str, arguments: dict[str, Any]) -> str:
+        printer.pause()
+        title, target, body, is_diff = modes.describe(name, arguments)
+        return ui.prompt_permission(title, target, body, is_diff)
+
+    return modes.Approver(edit_mode, ask, always)
+
+
+def _tool_hooks(edit_mode: str, printer: "_LivePrinter") -> tuple[Any, Any]:
+    """`on_tool_start` / `on_tool_result` callbacks that draw tool blocks.
+
+    The diff panel after an edit is skipped in `default` mode, where the
+    approval prompt already showed it; in `auto` and `dangerous` it is the
+    only place the change is shown.
+    """
+    current: dict[str, Any] = {}
+
+    def start(name: str, arguments: dict[str, Any]) -> None:
+        printer.pause()
+        _, target, body, is_diff = modes.describe(name, arguments)
+        current.update(target=target, diff=body if is_diff and edit_mode != "default" else "")
+        ui.render_tool_start(name, target)
+
+    def result(name: str, output: str) -> None:
+        ui.render_tool_result(
+            name, current.get("target", ""), ok=not output.startswith("Error"),
+            output=output, diff=current.get("diff", ""),
+        )
+
+    return start, result
+
+
     client: Any,
     plan_mode: bool = False,
     images: list[str] | None = None,
@@ -990,6 +1033,7 @@ def run_repl(
             task_text = _with_images(line, state.pending_images, state.config, state.client)
             state.pending_images = []
             _announce_model(choice)
+        on_tool_start, on_tool_result = _tool_hooks(state.edit_mode, printer)
             result = llm.run_task(
                 task_text,
                 state.history,
@@ -1007,6 +1051,9 @@ def run_repl(
         except llm.LLMError as e:
             printer.finish()
             ui.emit(f"Error: {_error_message(e, state.config)}")
+                approve=_approval_hook(state.edit_mode, state.always_allowed, printer),
+                on_tool_start=on_tool_start,
+                on_tool_result=on_tool_result,
             continue
 
         state.history = result.history
@@ -1124,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Error: --voice dictates the task, so don't also type one or pass -i "
                 "(inside the REPL, use /voice).",
                 err=True,
+    on_tool_start, on_tool_result = _tool_hooks(edit_mode, printer)
             )
             return 2
         task = _voice_task(config, confirm=_is_interactive())
@@ -1145,6 +1193,9 @@ def main(argv: list[str] | None = None) -> int:
 
     return run_once(task, config, client, plan_mode=plan_mode, images=images, edit_mode=edit_mode)
 
+            approve=_approval_hook(edit_mode, set(), printer),
+            on_tool_start=on_tool_start,
+            on_tool_result=on_tool_result,
 
 if __name__ == "__main__":
     sys.exit(main())
