@@ -42,6 +42,18 @@
   <p class="hint">Enter to send &middot; Shift+Enter for a new line</p>
 </form>
 </div>
+<aside id="artifact-pane" aria-label="Artifact" hidden>
+  <div class="pane-head">
+    <strong id="artifact-title"></strong>
+    <div class="pane-tabs">
+      <button id="tab-preview" type="button" class="tab active">Preview</button>
+      <button id="tab-code" type="button" class="tab">Code</button>
+    </div>
+    <button id="artifact-close" type="button" class="tab" aria-label="Close artifact">&times;</button>
+  </div>
+  <iframe id="artifact-frame" title="Artifact preview" sandbox="allow-scripts"></iframe>
+  <pre id="artifact-code" hidden></pre>
+</aside>
 <script src="/chat.js"></script>
 </body>
 </html>
