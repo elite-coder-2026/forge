@@ -110,14 +110,14 @@ def test_slash_model_with_no_argument_does_not_crash():
     state = make_state()
     output = handle_slash_command("/model", state)
     assert state.config.model == "initial-model"  # unchanged
-    assert "Usage" in output
+    assert "/model <name>" in output  # lists models, or says why it can't and shows usage
 
 
 def test_slash_model_with_only_whitespace_does_not_crash():
     state = make_state()
     output = handle_slash_command("/model    ", state)
     assert state.config.model == "initial-model"
-    assert "Usage" in output
+    assert "/model <name>" in output
 
 
 def test_slash_exit_raises_repl_exit():
