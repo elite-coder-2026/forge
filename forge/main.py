@@ -23,7 +23,7 @@ from typing import Any
 
 import ollama
 
-from . import budget, chatui, gitutil, llm, mcp, plugins, routing, session, tools, undo, vision, voice, webui
+from . import budget, chatui, gitutil, llm, mcp, plugins, routing, session, tools, ui, undo, vision, voice, webui
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -306,23 +306,23 @@ def _load_plugins(config: Config, trust_flag: bool) -> None:
             plugins.trust(config.working_dir, project_dir)
             load_project = True
         elif _is_interactive():
-            print("This project has plugins that would run inside forge:", file=sys.stderr)
+            ui.emit("This project has plugins that would run inside forge:", err=True)
             for path in project_files:
-                print(f"  {os.path.relpath(path, config.working_dir)}", file=sys.stderr)
+                ui.emit(f"  {os.path.relpath(path, config.working_dir)}", err=True)
             try:
-                answer = input("Load them? [y/N] ")
+                answer = ui.ask("Load them? [y/N] ")
             except (EOFError, KeyboardInterrupt):
                 answer = ""
             if answer.strip().lower() in ("y", "yes"):
                 plugins.trust(config.working_dir, project_dir)
                 load_project = True
             else:
-                print("Project plugins not loaded.", file=sys.stderr)
+                ui.emit("Project plugins not loaded.", err=True)
         else:
-            print(
+            ui.emit(
                 "Project plugins in .forge/plugins were not loaded: they haven't been approved. "
                 "Run forge interactively once to approve them, or pass --trust-plugins.",
-                file=sys.stderr,
+                err=True,
             )
 
     registry = plugins.PluginRegistry()
@@ -333,9 +333,9 @@ def _load_plugins(config: Config, trust_flag: bool) -> None:
     plugins.set_registry(registry)
 
     if registry.tools:
-        print(f"Plugins: loaded {', '.join(registry.tools)}", file=sys.stderr)
+        ui.emit(f"Plugins: loaded {', '.join(registry.tools)}", err=True)
     for path, error in registry.errors.items():
-        print(f"Plugins: {os.path.basename(path)} failed to load: {error}", file=sys.stderr)
+        ui.emit(f"Plugins: {os.path.basename(path)} failed to load: {error}", err=True)
 
 
 def _start_mcp(config: Config, trust_flag: bool) -> None:
@@ -353,22 +353,22 @@ def _start_mcp(config: Config, trust_flag: bool) -> None:
         if trust_flag:
             mcp.trust(config.working_dir, config.mcp_servers)
         elif _is_interactive():
-            print("This project's forge.toml wants to run these MCP servers:", file=sys.stderr)
+            ui.emit("This project's forge.toml wants to run these MCP servers:", err=True)
             for name, server in config.mcp_servers.items():
-                print(f"  {name}: {' '.join([server.command, *server.args])}", file=sys.stderr)
+                ui.emit(f"  {name}: {' '.join([server.command, *server.args])}", err=True)
             try:
-                answer = input("Allow them? [y/N] ")
+                answer = ui.ask("Allow them? [y/N] ")
             except (EOFError, KeyboardInterrupt):
                 answer = ""
             if answer.strip().lower() not in ("y", "yes"):
-                print("MCP servers not started.", file=sys.stderr)
+                ui.emit("MCP servers not started.", err=True)
                 return
             mcp.trust(config.working_dir, config.mcp_servers)
         else:
-            print(
+            ui.emit(
                 "MCP servers in forge.toml were not started: they haven't been approved. "
                 "Run forge interactively once to approve them, or pass --trust-mcp.",
-                file=sys.stderr,
+                err=True,
             )
             return
 
@@ -381,9 +381,9 @@ def _start_mcp(config: Config, trust_flag: bool) -> None:
         for name in manager.clients
     ]
     if connected:
-        print(f"MCP: connected {', '.join(connected)}", file=sys.stderr)
+        ui.emit(f"MCP: connected {', '.join(connected)}", err=True)
     for name, error in manager.errors.items():
-        print(f"MCP: server {name!r} failed to start: {error}", file=sys.stderr)
+        ui.emit(f"MCP: server {name!r} failed to start: {error}", err=True)
 
 
 def _handle_session_command(arg_str: str, state: REPLState) -> str:
@@ -536,10 +536,10 @@ def _start_web(config: Config, port: int) -> webui.Dashboard | None:
     try:
         dashboard = webui.Dashboard(lambda: _web_snapshot(config), port)
     except OSError as e:
-        print(f"Dashboard not started: could not listen on port {port}: {e}", file=sys.stderr)
+        ui.emit(f"Dashboard not started: could not listen on port {port}: {e}", err=True)
         return None
     atexit.register(dashboard.stop)
-    print(f"Dashboard: {dashboard.url} (read-only, localhost only)", file=sys.stderr)
+    ui.emit(f"Dashboard: {dashboard.url} (read-only, localhost only)", err=True)
     return dashboard
 
 
@@ -604,10 +604,10 @@ def _start_chat(port: int) -> chatui.ChatServer | None:
     try:
         server = chatui.ChatServer(_chat_reply, _chat_history, port)
     except OSError as e:
-        print(f"Chat page not started: could not listen on port {port}: {e}", file=sys.stderr)
+        ui.emit(f"Chat page not started: could not listen on port {port}: {e}", err=True)
         return None
     atexit.register(server.stop)
-    print(f"Chat: {server.url} (localhost only; tasks run in the active session)", file=sys.stderr)
+    ui.emit(f"Chat: {server.url} (localhost only; tasks run in the active session)", err=True)
     return server
 
 
@@ -624,22 +624,22 @@ def _voice_task(config: Config, confirm: bool = True) -> str | None:
             config.voice_record,
             config.voice_transcribe,
             limit,
-            on_status=lambda message: print(message, flush=True),
+            on_status=lambda message: ui.emit(message, flush=True),
         )
     except voice.VoiceError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        ui.emit(f"Error: {e}", err=True)
         return None
     except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
+        ui.emit("\nCancelled.", err=True)
         return None
 
-    print(f'Heard: "{text}"')
+    ui.emit(f'Heard: "{text}"')
     if not confirm:
         return text
     try:
-        answer = input("Send this? [Y/n] ")
+        answer = ui.ask("Send this? [Y/n] ")
     except (EOFError, KeyboardInterrupt):
-        print()
+        ui.emit()
         return None
     return text if answer.strip().lower() in ("", "y", "yes") else None
 
@@ -699,10 +699,10 @@ def _handle_auto_command(arg_str: str, state: REPLState) -> str:
     return f"Auto model selection: on (quick tasks: {config.fast_model!r}, larger tasks: {config.model!r})."
 
 
-def _announce_model(choice: routing.Choice, file: Any = None) -> None:
+def _announce_model(choice: routing.Choice, err: bool = False) -> None:
     """Tell the user which model was picked, but only when routing is active."""
     if choice.reason:
-        print(f"[auto] {choice.model}: {choice.reason}", file=file or sys.stdout, flush=True)
+        ui.emit(f"[auto] {choice.model}: {choice.reason}", err=err, flush=True)
 
 
 def _handle_undo_command(arg_str: str, state: REPLState) -> str:
@@ -730,7 +730,7 @@ def _with_images(task: str, images: list[str], config: Config, client: Any) -> s
     """`task` plus a vision-model description of `images`, if there are any."""
     if not images:
         return task
-    print(f"Analyzing {len(images)} image(s) with {config.vision_model}...", flush=True)
+    ui.emit(f"Analyzing {len(images)} image(s) with {config.vision_model}...", flush=True)
     return vision.enrich_task(task, images, client, config.vision_model, config.usage_file)
 
 
@@ -801,22 +801,22 @@ def _git_report(before: gitutil.Snapshot | None, task: str, interactive: bool) -
     if not files:
         return
 
-    print()
-    print(gitutil.diff_summary(after, files))
+    ui.emit()
+    ui.emit(gitutil.diff_summary(after, files))
     message = gitutil.suggest_message(task)
 
     if not interactive:
-        print(f'Suggested commit message: "{message}"')
+        ui.emit(f'Suggested commit message: "{message}"')
         return
 
     try:
-        answer = input(f'Commit these files with message "{message}"? [y/N] ')
+        answer = ui.ask(f'Commit these files with message "{message}"? [y/N] ')
     except (EOFError, KeyboardInterrupt):
-        print()
+        ui.emit()
         return
     if answer.strip().lower() in ("y", "yes"):
         ok, output = gitutil.commit(after.root, files, message)
-        print(output if output else ("Committed." if ok else "Commit failed."))
+        ui.emit(output if output else ("Committed." if ok else "Commit failed."))
 
 
 class _LivePrinter:
@@ -833,21 +833,21 @@ class _LivePrinter:
     def __call__(self, token: str) -> None:
         self.streamed = True
         self._mid_line = not token.endswith("\n")
-        print(token, end="", flush=True)
+        ui.emit(token, end="", flush=True)
 
     def notice(self, text: str) -> None:
         """A warning on stderr that never lands in the middle of a streamed line."""
         if self._mid_line:
-            print(flush=True)
+            ui.emit(flush=True)
             self._mid_line = False
-        print(f"[budget] {text}", file=sys.stderr, flush=True)
+        ui.emit(f"[budget] {text}", err=True, flush=True)
 
     def finish(self, fallback: str = "") -> None:
         if self.streamed:
             if self._mid_line:
-                print()
+                ui.emit()
         elif fallback:
-            print(fallback)
+            ui.emit(fallback)
 
 
 def run_repl(
@@ -867,18 +867,18 @@ def run_repl(
     state.workspace = workspace
     global _web_workspace
     _web_workspace = workspace
-    print(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
+    ui.emit(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
     if state.plan_mode:
-        print("Starting in plan mode (read-only). /build to exit.")
+        ui.emit("Starting in plan mode (read-only). /build to exit.")
     if state.pending_images:
-        print(f"{len(state.pending_images)} image(s) attached for your first task.")
+        ui.emit(f"{len(state.pending_images)} image(s) attached for your first task.")
     if config.fast_model:
-        print(_handle_auto_command("", state))
+        ui.emit(_handle_auto_command("", state))
 
     resumed = session.load(config.session_file)
     if resumed:
         state.history = resumed
-        print(f"Resumed previous session ({len(resumed)} messages). /clear starts fresh.")
+        ui.emit(f"Resumed previous session ({len(resumed)} messages). /clear starts fresh.")
 
     prompt_session = _make_prompt_session(workspace)
     while True:
@@ -886,7 +886,7 @@ def run_repl(
         try:
             line = _read_line(prompt_session, state)
         except (EOFError, KeyboardInterrupt):
-            print()
+            ui.emit()
             return
 
         line = line.strip()
@@ -906,7 +906,7 @@ def run_repl(
                 output = handle_slash_command(line, state)
             except REPLExit:
                 return
-            print(output)
+            ui.emit(output)
             continue
 
         printer = _LivePrinter()
@@ -939,7 +939,7 @@ def run_repl(
             )
         except llm.LLMError as e:
             printer.finish()
-            print(f"Error: {_error_message(e, state.config)}")
+            ui.emit(f"Error: {_error_message(e, state.config)}")
             continue
 
         state.history = result.history
@@ -990,7 +990,7 @@ def _make_prompt_session(workspace: Workspace) -> Any:
 def _read_line(prompt_session: Any, state: REPLState) -> str:
     text = _repl_prompt(state)
     if prompt_session is None:
-        return input(text)
+        return ui.ask(text)
     return prompt_session.prompt([("class:prompt", text)])
 
 
@@ -1016,7 +1016,7 @@ def run_once(
     )
     try:
         task_text = _with_images(task, images or [], config, client)
-        _announce_model(choice, file=sys.stderr)
+        _announce_model(choice, err=True)
         result = llm.run_task(
             task_text,
             llm.new_history(),
@@ -1033,7 +1033,7 @@ def run_once(
         )
     except llm.LLMError as e:
         printer.finish()
-        print(f"Error: {_error_message(e, config)}", file=sys.stderr)
+        ui.emit(f"Error: {_error_message(e, config)}", err=True)
         return 1
 
     printer.finish(fallback=result.content)
@@ -1048,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = Config.from_env()
     except ConfigError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        ui.emit(f"Error: {e}", err=True)
         return 2
     if args.model:
         config.model = args.model
@@ -1059,15 +1059,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         images = [vision.resolve_image(p, config.working_dir) for p in args.image]
     except vision.VisionError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        ui.emit(f"Error: {e}", err=True)
         return 2
 
     if args.voice:
         if task is not None or args.interactive:
-            print(
+            ui.emit(
                 "Error: --voice dictates the task, so don't also type one or pass -i "
                 "(inside the REPL, use /voice).",
-                file=sys.stderr,
+                err=True,
             )
             return 2
         task = _voice_task(config, confirm=_is_interactive())
