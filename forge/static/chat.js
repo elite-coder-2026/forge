@@ -23,18 +23,49 @@ function readLog() {
 
 function scrollDown() { scroller.scrollTop = scroller.scrollHeight; }
 
+// Pull <artifact ...>...</artifact> blocks out of a reply. A block the model
+// forgot to close runs to the end of the reply.
+function parseArtifacts(text) {
+  const found = [];
+  const prose = text.replace(/<artifact\s+([^>]*)>([\s\S]*?)(?:<\/artifact>|$)/g, (_, attrs, body) => {
+    const a = { id: '', type: 'code', title: 'Artifact', language: '', content: body.replace(/^\n/, '').replace(/\n$/, '') };
+    for (const m of attrs.matchAll(/(\w+)="([^"]*)"/g)) {
+      if (m[1] in a && m[1] !== 'content') a[m[1]] = m[2];
+    }
+    found.push(a);
+    return '';
+  });
+  return { prose: prose.trim(), found };
+}
+
+// Returns the artifacts found in the message so the caller can open one.
 function draw(role, text) {
   const li = document.createElement('li');
   li.className = 'msg ' + role;
   const who = document.createElement('span');
   who.className = 'who';
   who.textContent = role === 'user' ? 'You' : role === 'error' ? 'Error' : 'forge';
-  const pre = document.createElement('pre');
-  pre.textContent = text;
-  li.append(who, pre);
+  li.append(who);
+  let found = [];
+  let prose = text;
+  if (role === 'assistant') ({ prose, found } = parseArtifacts(text));
+  if (prose || !found.length) {
+    const pre = document.createElement('pre');
+    pre.textContent = prose;
+    li.append(pre);
+  }
+  found.forEach((a) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'artifact-card';
+    card.textContent = a.title + ' (' + a.type + ')';
+    card.addEventListener('click', () => openArtifact(a));
+    li.append(card);
+  });
   log.append(li);
   empty.hidden = true;
   scrollDown();
+  return found;
 }
 
 function add(role, text) {
@@ -43,8 +74,63 @@ function add(role, text) {
     current.title = text.length > 28 ? text.slice(0, 28) + '...' : text;
     renderList();
   }
-  draw(role, text);
+  const found = draw(role, text);
+  if (found.length) openArtifact(found[found.length - 1]);
 }
+
+const pane = document.getElementById('artifact-pane');
+const paneTitle = document.getElementById('artifact-title');
+const frame = document.getElementById('artifact-frame');
+const codeView = document.getElementById('artifact-code');
+const tabPreview = document.getElementById('tab-preview');
+const tabCode = document.getElementById('tab-code');
+let shown = null;
+
+function showTab(name) {
+  const preview = name === 'preview';
+  frame.hidden = !preview;
+  codeView.hidden = preview;
+  tabPreview.classList.toggle('active', preview);
+  tabCode.classList.toggle('active', !preview);
+}
+
+// html and svg run in a sandboxed iframe served by the server with its own
+// CSP; code and markdown are only ever shown as text.
+async function openArtifact(a) {
+  shown = a;
+  paneTitle.textContent = a.title;
+  codeView.textContent = a.content;
+  pane.hidden = false;
+  const runnable = a.type === 'html' || a.type === 'svg';
+  tabPreview.hidden = !runnable;
+  showTab('code');
+  if (!runnable) return;
+  const page = a.type === 'svg'
+    ? '<!doctype html><html><body style="margin:0">' + a.content + '</body></html>'
+    : a.content;
+  try {
+    const response = await fetch('/api/artifact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forge-Token': token },
+      body: JSON.stringify({ content: page }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    if (shown !== a) return;
+    frame.src = data.url;
+    showTab('preview');
+  } catch (error) {
+    if (shown === a) codeView.textContent = '(preview failed: ' + error.message + ')\n\n' + a.content;
+  }
+}
+
+tabPreview.addEventListener('click', () => showTab('preview'));
+tabCode.addEventListener('click', () => showTab('code'));
+document.getElementById('artifact-close').addEventListener('click', () => {
+  pane.hidden = true;
+  shown = null;
+  frame.removeAttribute('src');
+});
 
 function renderChat() {
   log.replaceChildren();
@@ -115,6 +201,7 @@ async function submit() {
 newChat.addEventListener('click', () => {
   current = { title: 'Chat ' + (chats.length + 1), messages: [] };
   chats.push(current);
+  pane.hidden = true;
   renderChat();
 });
 document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
@@ -122,5 +209,4 @@ input.addEventListener('input', autosize);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
 });
-renderList();
-scrollDown();
+renderChat();
