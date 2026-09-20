@@ -30,6 +30,19 @@ from .webui import HOST, _CSP
 
 DEFAULT_PORT = 8766
 MAX_BODY_BYTES = 64 * 1024
+MAX_ARTIFACT_BYTES = 512 * 1024
+MAX_ARTIFACTS = 50
+
+# The chat page may frame our own /artifact/ pages, nothing else.
+_CHAT_CSP = _CSP + "; frame-src 'self'"
+# Artifacts are model-written pages that must run their own inline script and
+# style, so they get a looser policy, but the `sandbox` directive gives them
+# an opaque origin (no access to the chat page or its token) and there is no
+# connect-src or other network access.
+_ARTIFACT_CSP = (
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+)
 
 # Autoescaping is on for .html, so message text can never become markup.
 _env = Environment(
@@ -40,6 +53,7 @@ _env = Environment(
 _STATIC = Path(__file__).parent / "static"
 CHAT_CSS = (_STATIC / "chat.css").read_text(encoding="utf-8")
 CHAT_JS = (_STATIC / "chat.js").read_text(encoding="utf-8")
+ARTIFACT_PROMPT = (Path(__file__).parent / "prompts" / "artifact.txt").read_text(encoding="utf-8")
 
 
 def _make_handler(
@@ -52,6 +66,8 @@ def _make_handler(
         "/chat.css": ("text/css; charset=utf-8", CHAT_CSS),
         "/chat.js": ("text/javascript; charset=utf-8", CHAT_JS),
     }
+    artifacts: dict[str, str] = {}  # key -> full HTML document, oldest first
+    artifacts_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "forge-chat"
@@ -60,13 +76,20 @@ def _make_handler(
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - silence per-request logs
             pass
 
-        def _send(self, status: int, content_type: str, body: bytes, extra: dict[str, str] | None = None) -> None:
+        def _send(
+            self,
+            status: int,
+            content_type: str,
+            body: bytes,
+            extra: dict[str, str] | None = None,
+            csp: str = _CHAT_CSP,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", _CSP)
+            self.send_header("Content-Security-Policy", csp)
             self.send_header("Referrer-Policy", "no-referrer")
             for key, value in (extra or {}).items():
                 self.send_header(key, value)
@@ -101,6 +124,13 @@ def _make_handler(
             elif path in assets:
                 content_type, text = assets[path]
                 self._send(200, content_type, text.encode("utf-8"))
+            elif path.startswith("/artifact/"):
+                with artifacts_lock:
+                    page = artifacts.get(path[len("/artifact/"):])
+                if page is None:
+                    self._send(404, "text/plain; charset=utf-8", b"Not found")
+                else:
+                    self._send(200, "text/html; charset=utf-8", page.encode("utf-8"), csp=_ARTIFACT_CSP)
             else:
                 self._send(404, "text/plain; charset=utf-8", b"Not found")
 
@@ -110,9 +140,11 @@ def _make_handler(
             if not self._host_allowed():
                 self._send(403, "text/plain; charset=utf-8", b"Forbidden host")
                 return
-            if self.path.split("?", 1)[0] != "/api/chat":
+            path = self.path.split("?", 1)[0]
+            if path not in ("/api/chat", "/api/artifact"):
                 self._send(404, "text/plain; charset=utf-8", b"Not found")
                 return
+            is_artifact = path == "/api/artifact"
             origin = self.headers.get("Origin")
             if origin is not None and origin not in self._origins():
                 self._json(403, {"error": "Forbidden origin"})
@@ -129,15 +161,30 @@ def _make_handler(
             except ValueError:
                 self._json(411, {"error": "Content-Length required"})
                 return
-            if length < 0 or length > MAX_BODY_BYTES:
+            if length < 0 or length > (MAX_ARTIFACT_BYTES if is_artifact else MAX_BODY_BYTES):
                 self._json(413, {"error": "Message too large"})
                 return
 
+            field = "content" if is_artifact else "message"
             try:
-                message = json.loads(self.rfile.read(length)).get("message", "")
+                body = json.loads(self.rfile.read(length)).get(field, "")
             except (ValueError, AttributeError):
-                self._json(400, {"error": "Body must be a JSON object with a 'message' field"})
+                self._json(400, {"error": f"Body must be a JSON object with a '{field}' field"})
                 return
+
+            if is_artifact:
+                if not isinstance(body, str) or not body.strip():
+                    self._json(400, {"error": "Empty artifact"})
+                    return
+                key = secrets.token_urlsafe(16)
+                with artifacts_lock:
+                    artifacts[key] = body
+                    while len(artifacts) > MAX_ARTIFACTS:
+                        del artifacts[next(iter(artifacts))]
+                self._json(200, {"url": f"/artifact/{key}"})
+                return
+
+            message = body
             if not isinstance(message, str) or not message.strip():
                 self._json(400, {"error": "Empty message"})
                 return
