@@ -12,7 +12,7 @@ from typing import Any, Callable
 from ..theme import PROMPT_MARKER, PROMPT_STYLES, RULE_CHAR
 from .transcript import render_user
 
-KEY_HINTS = "enter send · alt+enter newline · / commands · ctrl+d exit"
+KEY_HINTS = "enter send · alt+enter newline · shift+tab mode · / commands · ctrl+d exit"
 
 
 def _rule() -> str:
@@ -30,14 +30,52 @@ def _map_shift_enter() -> None:
         ANSI_SEQUENCES[sequence] = (Keys.Escape, Keys.ControlM)
 
 
-def make_input(commands: list[str], history_file: str, status: Callable[[], str]) -> Any:
+def _slash_completer(commands: dict[str, str], arguments: dict[str, Callable[[], list[str]]]) -> Any:
+    """Completes `/command` names (with a one-line description shown beside
+    each) and, after a command, its arguments."""
+    from prompt_toolkit.completion import Completer, Completion
+
+    class SlashCompleter(Completer):
+        def get_completions(self, document: Any, complete_event: Any) -> Any:
+            text = document.text_before_cursor
+            if "\n" in text or not text.startswith("/"):
+                return
+            if " " not in text:
+                for name, description in commands.items():
+                    if name.startswith(text):
+                        yield Completion(name, start_position=-len(text), display_meta=description)
+                return
+            name, _, typed = text.partition(" ")
+            provider = arguments.get(name)
+            if provider is None:
+                return
+            try:
+                values = provider()
+            except Exception:  # noqa: BLE001 - a broken provider just offers nothing
+                return
+            for value in values:
+                if value.startswith(typed):
+                    yield Completion(value, start_position=-len(typed))
+
+    return SlashCompleter()
+
+
+def make_input(
+    commands: dict[str, str] | list[str],
+    history_file: str,
+    status: Callable[[], str],
+    on_cycle_mode: Callable[[], None] | None = None,
+    arguments: dict[str, Callable[[], list[str]]] | None = None,
+) -> Any:
     """A prompt session, or None when stdin/stdout aren't a terminal (callers
-    then fall back to plain line input)."""
+    then fall back to plain line input). `commands` maps each slash command to a
+    short description; `arguments` maps a command to a function returning the
+    values to offer after it. `on_cycle_mode` runs on Shift+Tab; the toolbar is
+    redrawn afterward so the new mode shows at once."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return None
     try:
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import WordCompleter
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.styles import Style
@@ -57,6 +95,13 @@ def make_input(commands: list[str], history_file: str, status: Callable[[], str]
     def _newline(event: Any) -> None:
         event.current_buffer.insert_text("\n")
 
+    if on_cycle_mode is not None:
+
+        @keys.add("s-tab")
+        def _cycle(event: Any) -> None:
+            on_cycle_mode()
+            event.app.invalidate()
+
     _map_shift_enter()
 
     def toolbar() -> list[tuple[str, str]]:
@@ -69,7 +114,10 @@ def make_input(commands: list[str], history_file: str, status: Callable[[], str]
 
     return PromptSession(
         history=FileHistory(history_file),
-        completer=WordCompleter(commands, sentence=True),
+        completer=_slash_completer(
+            commands if isinstance(commands, dict) else {name: "" for name in commands},
+            arguments or {},
+        ),
         complete_while_typing=True,
         multiline=True,
         key_bindings=keys,
