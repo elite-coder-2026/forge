@@ -321,7 +321,7 @@ def cli(monkeypatch, tmp_path):
     monkeypatch.setenv("FORGE_VOICE_TRANSCRIBE", TRANSCRIBE)
     seen = {}
 
-    def fake_run_once(task, config, client, plan_mode=False, images=None):
+    def fake_run_once(task, config, client, plan_mode=False, images=None, edit_mode="default"):
         seen["task"] = task
         return 0
 
