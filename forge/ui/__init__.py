@@ -1,45 +1,32 @@
 """The single rendering boundary: all terminal output and input goes through here.
 
-Step 1 is a plain passthrough to print()/input(); later steps swap the
-internals for rich / prompt_toolkit components without touching callers.
+Only this package imports rich or prompt_toolkit. Colors live in `theme.py`,
+one component per module in `components/`.
+
+`render_tool_start`, `render_tool_result`, `render_diff` and
+`prompt_permission` are plain passthroughs for now: the agent loop doesn't
+emit tool events yet, so there is nothing to draw (see the UI plan).
 """
 
-import sys
-from typing import Iterable, Optional
+from __future__ import annotations
 
+from typing import Any, Optional
 
-def emit(message: str = "", *, err: bool = False, end: str = "\n", flush: bool = False) -> None:
-    """Write a line (or fragment) to stdout, or stderr with err=True."""
-    print(message, file=sys.stderr if err else sys.stdout, end=end, flush=flush)
+from .components.banner import render_banner
+from .components.input_box import make_input, read_input
+from .components.status import emit, render_error, render_status
+from .components.transcript import AssistantStream, render_assistant_stream, render_user
+
+__all__ = [
+    "AssistantStream", "ask", "emit", "make_input", "prompt_permission", "read_input",
+    "render_assistant_stream", "render_banner", "render_diff", "render_error",
+    "render_status", "render_tool_result", "render_tool_start", "render_user",
+]
 
 
 def ask(prompt: str = "") -> str:
-    """Read one line of typed input (raises EOFError/KeyboardInterrupt like input())."""
+    """Read one plain line (raises EOFError/KeyboardInterrupt like input())."""
     return input(prompt)
-
-
-def read_input(prompt: str = "") -> str:
-    return ask(prompt)
-
-
-def render_user(text: str) -> None:
-    emit(text)
-
-
-def render_assistant_stream(tokens: Iterable[str]) -> str:
-    parts = []
-    for token in tokens:
-        parts.append(token)
-        emit(token, end="", flush=True)
-    return "".join(parts)
-
-
-def render_status(message: str, *, err: bool = True) -> None:
-    emit(message, err=err)
-
-
-def render_error(message: str) -> None:
-    emit(message, err=True)
 
 
 def render_tool_start(name: str, target: str = "") -> None:
@@ -54,5 +41,5 @@ def render_diff(path: str, diff: str) -> None:
     emit(diff)
 
 
-def prompt_permission(question: str, choices: Optional[str] = None) -> str:
+def prompt_permission(question: str, choices: Optional[Any] = None) -> str:
     return ask(question)
