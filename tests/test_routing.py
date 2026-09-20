@@ -184,7 +184,7 @@ def test_explicit_model_flag_disables_routing(tmp_path, monkeypatch):
     monkeypatch.setenv("FORGE_FAST_MODEL", FAST)
     seen = {}
 
-    def fake_run_once(task, config, client, plan_mode=False, images=None):
+    def fake_run_once(task, config, client, plan_mode=False, images=None, edit_mode="default"):
         seen["model"], seen["fast"] = config.model, config.fast_model
         return 0
 
