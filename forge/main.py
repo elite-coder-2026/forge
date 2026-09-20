@@ -578,9 +578,11 @@ def _chat_reply(message: str) -> str:
             last=state.last_model,
         )
         try:
+            # The artifact prompt is chat-only: sent as a system message for
+            # this task, then dropped so it never lands in the shared history.
             result = llm.run_task(
                 message,
-                state.history,
+                [{"role": "system", "content": chatui.ARTIFACT_PROMPT}, *state.history],
                 state.client,
                 choice.model,
                 base_dir=state.config.working_dir,
@@ -591,7 +593,7 @@ def _chat_reply(message: str) -> str:
             )
         except llm.LLMError as e:
             raise RuntimeError(_error_message(e, state.config)) from e
-        state.history = result.history
+        state.history = result.history[1:]
         state.last_model = choice.model
         session.save(state.config.session_file, state.history)
         return result.content
