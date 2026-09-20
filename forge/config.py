@@ -67,6 +67,7 @@ _FILE_KEYS: dict[str, tuple[type, ...]] = {
     "host": (str,),
     "vision_model": (str,),
     "fast_model": (str,),
+    "think": (str,),
     "max_iterations": (int,),
     "shell_timeout": (int,),
     "voice_record": (str,),
@@ -156,6 +157,13 @@ def _parse_mcp_servers(path: str, raw: dict[str, Any]) -> dict[str, MCPServerCon
     return servers
 
 
+def _parse_think(value: str) -> str:
+    value = value.strip().lower()
+    if value not in ("", "on", "off"):
+        raise ConfigError(f"think must be 'on' or 'off' (or unset for the model's default), got {value!r}")
+    return value
+
+
 def _resolve_path(value: str, working_dir: str) -> str:
     """`~` expands; a relative path is relative to the project directory."""
     value = os.path.expanduser(value)
@@ -172,6 +180,9 @@ class Config:
     # Small, quick model for simple tasks (see forge/routing.py). Empty
     # disables automatic model selection: everything uses `model`.
     fast_model: str = ""
+    # "on" / "off" sets Ollama's `think` for models that reason before
+    # answering (e.g. Qwen3); empty leaves it to the model's default.
+    think: str = ""
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     shell_timeout: int = DEFAULT_SHELL_TIMEOUT
     # Voice input (see forge/voice.py). Empty `voice_record` auto-detects a
@@ -190,6 +201,11 @@ class Config:
     completion_price_per_1m: float = DEFAULT_COMPLETION_PRICE_PER_1M
     # MCP servers to launch (forge.toml only; see forge/mcp.py).
     mcp_servers: dict[str, MCPServerConfig] = field(default_factory=dict)
+
+    @property
+    def think_setting(self) -> bool | None:
+        """`think` as Ollama wants it: True, False, or None for the model default."""
+        return {"on": True, "off": False}.get(self.think)
 
     @classmethod
     def from_env(cls, working_dir: str | None = None) -> "Config":
@@ -220,6 +236,7 @@ class Config:
             host=pick("FORGE_HOST", "host", DEFAULT_HOST),
             vision_model=pick("FORGE_VISION_MODEL", "vision_model", DEFAULT_VISION_MODEL),
             fast_model=pick("FORGE_FAST_MODEL", "fast_model", ""),
+            think=_parse_think(pick("FORGE_THINK", "think", "")),
             max_iterations=pick(
                 "FORGE_MAX_ITERATIONS", "max_iterations", DEFAULT_MAX_ITERATIONS, int
             ),
