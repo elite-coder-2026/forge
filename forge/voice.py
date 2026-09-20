@@ -215,3 +215,35 @@ def listen(
         record(recorder, audio, seconds)
         say("Transcribing...")
         return transcribe(transcriber, audio)
+
+
+class VoiceInput:
+    """Dictation behind a small start / stop / transcript-callback interface.
+
+    `start()` records and transcribes (blocking, exactly like `listen`) and
+    hands the transcript to `on_transcript`, so the caller feeds it into the
+    same input path as typed text. `stop()` drops a pending transcript.
+    Errors surface as `VoiceError` from `start()`.
+    """
+
+    def __init__(
+        self,
+        record_command: str,
+        transcribe_command: str,
+        seconds: int,
+        on_transcript: Callable[[str], None],
+        on_status: Callable[[str], None] | None = None,
+    ) -> None:
+        self._args = (record_command, transcribe_command, seconds)
+        self._on_transcript = on_transcript
+        self._on_status = on_status
+        self._stopped = False
+
+    def start(self) -> None:
+        self._stopped = False
+        text = listen(*self._args, on_status=self._on_status)
+        if not self._stopped:
+            self._on_transcript(text)
+
+    def stop(self) -> None:
+        self._stopped = True
