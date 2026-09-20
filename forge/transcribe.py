@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 import sys
 
+from . import ui
+
 DEFAULT_MODEL = "base.en"
 
 
@@ -41,15 +43,15 @@ def main(argv: list[str] | None = None) -> int:
             _load(model_name())
             return 0
         if len(argv) != 1:
-            print("usage: python -m forge.transcribe FILE | --prefetch", file=sys.stderr)
+            ui.emit("usage: python -m forge.transcribe FILE | --prefetch", err=True)
             return 2
-        print(transcribe_file(argv[0]))
+        ui.emit(transcribe_file(argv[0]))
         return 0
     except ImportError:
-        print('faster-whisper is not installed: pip install "forge[voice]"', file=sys.stderr)
+        ui.emit('faster-whisper is not installed: pip install "forge[voice]"', err=True)
         return 1
     except Exception as e:  # noqa: BLE001 - reported as one line for the caller
-        print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        ui.emit(f"{type(e).__name__}: {e}", err=True)
         return 1
 
 
