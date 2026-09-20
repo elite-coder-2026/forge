@@ -8,6 +8,11 @@
 <link rel="stylesheet" href="/chat.css">
 </head>
 <body>
+<aside id="sidebar" aria-label="Chats">
+  <button id="new-chat" type="button">+ New chat</button>
+  <ol id="chats"></ol>
+</aside>
+<div class="chat">
 <header>
   <div class="brand"><span class="logo" aria-hidden="true"></span><h1>forge</h1></div>
   <span id="status" class="pill" role="status">ready</span>
@@ -36,6 +41,7 @@
   </div>
   <p class="hint">Enter to send &middot; Shift+Enter for a new line</p>
 </form>
+</div>
 <script src="/chat.js"></script>
 </body>
 </html>
