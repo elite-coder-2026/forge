@@ -998,6 +998,8 @@ def _tool_hooks(edit_mode: str, printer: "_LivePrinter") -> tuple[Any, Any]:
         line = line.strip()
         if not line:
             continue
+            # Ctrl+D or Ctrl+C at the prompt exits. (scripts/dev.sh stops the app
+            # with Ctrl+C to restart it, so this must stay an exit.)
 
         dictated = False
         if line == "/voice":
@@ -1051,9 +1053,12 @@ def _tool_hooks(edit_mode: str, printer: "_LivePrinter") -> tuple[Any, Any]:
         except llm.LLMError as e:
             printer.finish()
             ui.emit(f"Error: {_error_message(e, state.config)}")
-                approve=_approval_hook(state.edit_mode, state.always_allowed, printer),
-                on_tool_start=on_tool_start,
-                on_tool_result=on_tool_result,
+            continue
+        except KeyboardInterrupt:
+            # Ctrl+C cancels this turn only; the history is left as it was.
+            ui.stop_tool_block()
+            printer.finish()
+            ui.render_status("Cancelled.", err=False)
             continue
 
         state.history = result.history
