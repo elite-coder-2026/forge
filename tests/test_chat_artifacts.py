@@ -76,6 +76,7 @@ def test_chat_reply_sends_the_artifact_prompt_but_does_not_keep_it(monkeypatch):
         max_iterations=1,
         usage_file=None,
         session_file="unused",
+        think_setting=None,
     )
     state = main.REPLState(config=config, client=None)
     state.history = [{"role": "user", "content": "earlier"}]
