@@ -25,13 +25,36 @@ Interactive REPL:
 forge -i
 ```
 
-REPL commands: `/help`, `/clear`, `/model <name>`, `/pull <name>`, `/usage`, `/plan`, `/build`, `/exit` / `/quit`.
+REPL commands: `/help`, `/clear`, `/model` (lists the models on your Ollama server), `/model <name>`, `/pull <name>`, `/usage`, `/plan`, `/build`, `/exit` / `/quit`.
 
 Pass `--plan` to either mode to start read-only: only `read_file`/`list_dir`
 are available, and the model is told to describe a plan instead of acting.
 `edit_file`/`write_file`/`run_shell` are refused even if the model calls
 them anyway. Use `/build` in the REPL (or drop `--plan`) to get full tool
 access back.
+
+### Permission modes
+
+In a terminal, forge asks before it edits a file or runs a command. Pick a
+mode with `--mode` or, in the REPL, `/mode <name>` (`/mode` alone shows it):
+
+| Mode | Behavior |
+|------|----------|
+| `default` | Ask before edits (`edit_file`, `write_file`) and before shell commands (`run_shell`, `run_tests`). |
+| `auto` | Edits go through; shell commands still ask. |
+| `plan` | Read-only, same as `--plan`. |
+| `dangerous` | Never ask. `--dangerous-edits` is shorthand for `--mode dangerous`. |
+
+In the REPL, Shift+Tab cycles `default` → `auto` → `plan` and the status bar
+updates at once; `dangerous` is not on the hotkey, so it can't be reached by
+accident (use `/mode dangerous` or `--dangerous-edits`).
+
+A prompt shows the change (edits as a diff) and offers allow once, always this
+session (for that kind of action), or deny. Blank or unrecognized input denies.
+A denied action is reported to the model as declined. Without a terminal
+(piped input, `--chat`), nothing can ask, so tools run as before. MCP and
+plugin tools are not gated. Conflicting flags (for example `--plan
+--dangerous-edits`) are an error.
 
 ## Configuration
 
@@ -353,4 +376,8 @@ against a different model or provider.
 ```bash
 pip install -e ".[dev]"
 pytest tests/ -v
+scripts/dev.sh          # restart forge (-i) whenever a source file changes
 ```
+
+`scripts/dev.sh` passes any arguments on to forge. A restart drops what you
+were typing, but the conversation resumes from the saved session.
