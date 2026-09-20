@@ -18,12 +18,13 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import ollama
 
-from . import budget, chatui, gitutil, llm, mcp, plugins, routing, session, tools, ui, undo, vision, voice, webui
+from . import budget, chatui, gitutil, llm, mcp, modes, plugins, routing, session, tools, ui, undo, vision, voice, webui
 from . import __version__
 from .config import Config, ConfigError
 
@@ -31,10 +32,12 @@ HELP_TEXT = """\
 Commands:
   /help            Show this help.
   /clear           Clear the conversation history and saved session (starts fresh).
+  /model           List the models available on the Ollama server.
   /model <name>    Switch to a different model for subsequent tasks.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
   /voice           Dictate the next task (needs voice_transcribe; see README).
+  Shift+Tab        Cycle the mode: default, auto, plan.
   /plugins         List loaded plugin tools (custom tools from .forge/plugins).
   /mcp             List connected MCP servers and their tools.
   /budget          Show session token/compute budget (/budget tokens N, /budget minutes N; 0 or off disables).
@@ -45,7 +48,9 @@ Commands:
   /image <path>    Attach image(s) to the next task (screenshot -> code). /image alone lists; /image clear drops them.
   /plan            Enter plan mode: read-only tools only, no edits or shell commands.
   /build           Exit plan mode: full tool access again.
-  /exit, /quit     Exit the REPL.
+  /mode [name]     Show or set the permission mode: default (ask before edits and commands),
+                   auto (edits go through, commands still ask), plan (read-only), dangerous (never ask).
+  /exit, /quit    Exit the REPL.
 Anything else is sent to the model as a task."""
 
 
@@ -71,6 +76,8 @@ class REPLState:
     client: Any
     history: list[dict[str, Any]] = field(default_factory=llm.new_history)
     plan_mode: bool = False
+    edit_mode: str = "default"  # default | auto | dangerous (plan is `plan_mode`)
+    always_allowed: set[str] = field(default_factory=set)  # "edits"/"shell" answered "always"
     pending_images: list[str] = field(default_factory=list)
     auto_model: bool = True
     budget: budget.BudgetTracker = field(default_factory=budget.BudgetTracker)
@@ -93,6 +100,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plan",
         action="store_true",
         help="Plan mode: read-only tools only, no edits or shell commands.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=modes.MODES,
+        default=None,
+        help="Permission mode: default (ask before edits and commands), auto (edits go through), "
+        "plan (read-only), dangerous (never ask).",
+    )
+    parser.add_argument(
+        "--dangerous-edits",
+        action="store_true",
+        help="Same as --mode dangerous: edits and shell commands run without asking.",
     )
     parser.add_argument(
         "--voice",
@@ -188,7 +207,7 @@ def handle_slash_command(line: str, state: REPLState) -> str:
 
     if name == "/model":
         if not arg_str:
-            return "Usage: /model <name>"
+            return _list_models(state)
         state.config.model = arg_str
         message = f"Model set to {arg_str!r}"
         if state.config.fast_model and state.auto_model:
@@ -250,10 +269,56 @@ def handle_slash_command(line: str, state: REPLState) -> str:
         state.plan_mode = False
         return "Exited plan mode: full tool access restored."
 
+    if name == "/mode":
+        return _handle_mode_command(arg_str, state)
+
     if name == "/help":
         return HELP_TEXT
 
     return f"Unknown command: {name!r} (try /help)"
+
+
+def _field(item: Any, key: str) -> Any:
+    """A field of an Ollama response item, whether it's a dict or an object."""
+    return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+
+
+def _installed_models(client: Any) -> list[tuple[str, Any]]:
+    """(name, size) for each model on the Ollama server, sorted by name."""
+    found = _field(client.list(), "models") or []
+    return sorted((_field(m, "model") or _field(m, "name") or "?", _field(m, "size")) for m in found)
+
+
+def _list_models(state: REPLState) -> str:
+    """The models the Ollama server has, with the current one marked."""
+    try:
+        rows = _installed_models(state.client)
+    except Exception as e:  # noqa: BLE001 - the server may be down; say so, don't crash
+        return f"Could not list models: {type(e).__name__}: {e}\nUsage: /model <name>"
+    if not rows:
+        return "No models found. /pull <name> to download one."
+    lines = ["Available models (* = current):"]
+    for name, size in rows:
+        mark = "*" if name == state.config.model else " "
+        lines.append(f"  {mark} {name}" + (f"  ({size / 1e9:.1f} GB)" if size else ""))
+    lines.append("/model <name> to switch, /pull <name> to download another.")
+    return "\n".join(lines)
+
+
+def _handle_mode_command(arg_str: str, state: REPLState) -> str:
+    wanted = arg_str.strip().lower()
+    if not wanted:
+        return f"Mode: {modes.label(state.plan_mode, state.edit_mode)} (choose from {', '.join(modes.MODES)})."
+    if wanted not in modes.MODES:
+        return f"Unknown mode {wanted!r}. Choose from {', '.join(modes.MODES)}."
+    if wanted == "plan":
+        state.plan_mode = True
+        return "Mode: plan (read-only tools only). /mode default, /mode auto or /build to leave."
+    state.plan_mode = False
+    state.edit_mode = wanted
+    if wanted == "dangerous":
+        return "Mode: dangerous. Edits and shell commands run WITHOUT asking."
+    return f"Mode: {modes.label(False, wanted)}."
 
 
 def _handle_image_command(arg_str: str, state: REPLState) -> str:
@@ -838,6 +903,10 @@ class _LivePrinter:
         self.streamed = True
         self._stream.write(token)
 
+    def pause(self) -> None:
+        """End the current streamed block so a prompt can print below it."""
+        self._stream.pause()
+
     def notice(self, text: str) -> None:
         """A warning on stderr that never lands in the middle of a streamed line."""
         self._stream.pause()
@@ -850,16 +919,57 @@ class _LivePrinter:
             ui.emit(fallback)
 
 
+def _approval_hook(edit_mode: str, always: set[str], printer: "_LivePrinter") -> Any:
+    """The approval callback for `llm.run_task`, or None when nothing should be
+    asked: dangerous mode never asks, and with no terminal to ask on, tools
+    run as they always did."""
+    if edit_mode == "dangerous" or not _is_interactive():
+        return None
+
+    def ask(name: str, arguments: dict[str, Any]) -> str:
+        printer.pause()
+        title, target, body, is_diff = modes.describe(name, arguments)
+        return ui.prompt_permission(title, target, body, is_diff)
+
+    return modes.Approver(edit_mode, ask, always)
+
+
+def _tool_hooks(edit_mode: str, printer: "_LivePrinter") -> tuple[Any, Any]:
+    """`on_tool_start` / `on_tool_result` callbacks that draw tool blocks.
+
+    The diff panel after an edit is skipped in `default` mode, where the
+    approval prompt already showed it; in `auto` and `dangerous` it is the
+    only place the change is shown.
+    """
+    current: dict[str, Any] = {}
+
+    def start(name: str, arguments: dict[str, Any]) -> None:
+        printer.pause()
+        _, target, body, is_diff = modes.describe(name, arguments)
+        current.update(target=target, diff=body if is_diff and edit_mode != "default" else "")
+        ui.render_tool_start(name, target)
+
+    def result(name: str, output: str) -> None:
+        ui.render_tool_result(
+            name, current.get("target", ""), ok=not output.startswith("Error"),
+            output=output, diff=current.get("diff", ""),
+        )
+
+    return start, result
+
+
 def run_repl(
     config: Config,
     client: Any,
     plan_mode: bool = False,
     images: list[str] | None = None,
+    edit_mode: str = "default",
 ) -> None:
     state = REPLState(
         config=config,
         client=client,
         plan_mode=plan_mode,
+        edit_mode=edit_mode,
         pending_images=list(images or []),
         budget=budget.BudgetTracker(config.budget_tokens, config.budget_minutes),
     )
@@ -870,6 +980,8 @@ def run_repl(
     ui.render_banner(__version__, config.model, config.working_dir)
     if state.plan_mode:
         ui.emit("Starting in plan mode (read-only). /build to exit.")
+    elif state.edit_mode == "dangerous":
+        ui.render_status("Dangerous mode: edits and shell commands run without asking.", err=False)
     if state.pending_images:
         ui.emit(f"{len(state.pending_images)} image(s) attached for your first task.")
     if config.fast_model:
@@ -886,6 +998,8 @@ def run_repl(
         try:
             line = _read_line(prompt_session, state)
         except (EOFError, KeyboardInterrupt):
+            # Ctrl+D or Ctrl+C at the prompt exits. (scripts/dev.sh stops the app
+            # with Ctrl+C to restart it, so this must stay an exit.)
             ui.emit()
             return
 
@@ -919,6 +1033,7 @@ def run_repl(
             plan_mode=state.plan_mode,
             last=state.last_model,
         )
+        on_tool_start, on_tool_result = _tool_hooks(state.edit_mode, printer)
         try:
             task_text = _with_images(line, state.pending_images, state.config, state.client)
             state.pending_images = []
@@ -936,10 +1051,19 @@ def run_repl(
                 on_token=printer,
                 on_step=_budget_hook(state.budget, printer),
                 think=state.config.think_setting,
+                approve=_approval_hook(state.edit_mode, state.always_allowed, printer),
+                on_tool_start=on_tool_start,
+                on_tool_result=on_tool_result,
             )
         except llm.LLMError as e:
             printer.finish()
             ui.emit(f"Error: {_error_message(e, state.config)}")
+            continue
+        except KeyboardInterrupt:
+            # Ctrl+C cancels this turn only; the history is left as it was.
+            ui.stop_tool_block()
+            printer.finish()
+            ui.render_status("Cancelled.", err=False)
             continue
 
         state.history = result.history
@@ -949,11 +1073,27 @@ def run_repl(
         _git_report(before, line, interactive=True)
 
 
-SLASH_COMMANDS = [
-    "/help", "/clear", "/model", "/pull", "/usage", "/voice", "/plugins", "/mcp",
-    "/budget", "/auto", "/fast", "/session", "/undo", "/image", "/plan", "/build",
-    "/exit", "/quit",
-]
+SLASH_COMMANDS = {
+    "/help": "Show all commands",
+    "/clear": "Clear the conversation",
+    "/model": "List or switch models",
+    "/pull": "Download a model",
+    "/usage": "Token usage and estimated savings",
+    "/voice": "Dictate the next task",
+    "/plugins": "List plugin tools",
+    "/mcp": "List MCP servers and tools",
+    "/budget": "Show or set the session budget",
+    "/auto": "Automatic model selection",
+    "/fast": "Set the fast model",
+    "/session": "Work in several folders",
+    "/undo": "Revert forge's file changes",
+    "/image": "Attach an image to the next task",
+    "/plan": "Plan mode (read-only)",
+    "/build": "Leave plan mode",
+    "/mode": "Show or set the permission mode",
+    "/exit": "Quit",
+    "/quit": "Quit",
+}
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".forge", "history")
 
 
@@ -963,20 +1103,52 @@ def _make_prompt_session(workspace: Workspace) -> Any:
     def status() -> str:
         state = workspace.state
         tokens, seconds = _session_totals()
-        mode = "plan (read-only)" if state.plan_mode else "build"
+        mode = modes.label(state.plan_mode, state.edit_mode)
         return (
             f"{state.config.model} · {mode} · {os.path.basename(state.config.working_dir) or '/'}"
-            f" · voice {_voice_state(state.config)} · {tokens:,} tokens · {seconds / 60:.1f} min"
+            f" · {tokens:,} tokens · {seconds / 60:.1f} min"
         )
 
-    return ui.make_input(SLASH_COMMANDS, HISTORY_FILE, status)
+    return ui.make_input(
+        SLASH_COMMANDS,
+        HISTORY_FILE,
+        status,
+        on_cycle_mode=lambda: _cycle_mode(workspace.state),
+        arguments={
+            "/mode": lambda: list(modes.MODES),
+            "/model": lambda: _model_names(workspace.state.client),
+            "/auto": lambda: ["on", "off"],
+            "/fast": lambda: [*_model_names(workspace.state.client), "off"],
+            "/session": lambda: ["list", "new", "switch", "close"],
+        },
+    )
 
 
-def _voice_state(config: Config) -> str:
-    """"on" when dictation could run (a recorder and a transcriber exist)."""
-    recorder = config.voice_record.strip() or voice.find_recorder()
-    transcriber = config.voice_transcribe.strip() or voice.builtin_available()
-    return "on" if recorder and transcriber else "off"
+_MODEL_NAMES_TTL = 15.0
+_model_names_cache: dict[str, Any] = {"at": 0.0, "names": []}
+
+
+def _model_names(client: Any) -> list[str]:
+    """Installed model names for tab completion. Cached briefly so typing
+    doesn't ask the server on every keystroke; [] if the server can't be reached."""
+    now = time.monotonic()
+    if now - _model_names_cache["at"] > _MODEL_NAMES_TTL:
+        try:
+            names = [name for name, _ in _installed_models(client)]
+        except Exception:  # noqa: BLE001
+            names = []
+        _model_names_cache.update(at=now, names=names)
+    return _model_names_cache["names"]
+
+
+CYCLE_MODES = ("default", "auto", "plan")  # `dangerous` is deliberately not on the hotkey
+
+
+def _cycle_mode(state: REPLState) -> None:
+    """Shift+Tab: move to the next mode in default -> auto -> plan -> default."""
+    current = "plan" if state.plan_mode else state.edit_mode
+    following = CYCLE_MODES[(CYCLE_MODES.index(current) + 1) % len(CYCLE_MODES)] if current in CYCLE_MODES else "default"
+    _handle_mode_command(following, state)
 
 
 def _read_line(prompt_session: Any, state: REPLState) -> str:
@@ -996,8 +1168,10 @@ def run_once(
     client: Any,
     plan_mode: bool = False,
     images: list[str] | None = None,
+    edit_mode: str = "default",
 ) -> int:
     printer = _LivePrinter()
+    on_tool_start, on_tool_result = _tool_hooks(edit_mode, printer)
     tracker = budget.BudgetTracker(config.budget_tokens, config.budget_minutes)
     before = None if plan_mode else gitutil.snapshot(config.working_dir)
     choice = routing.choose_model(
@@ -1019,6 +1193,9 @@ def run_once(
             on_token=printer,
             on_step=_budget_hook(tracker, printer),
             think=config.think_setting,
+            approve=_approval_hook(edit_mode, set(), printer),
+            on_tool_start=on_tool_start,
+            on_tool_result=on_tool_result,
         )
     except llm.LLMError as e:
         printer.finish()
@@ -1039,6 +1216,14 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         ui.emit(f"Error: {e}", err=True)
         return 2
+    requested = {m for m in (args.mode, "plan" if args.plan else None, "dangerous" if args.dangerous_edits else None) if m}
+    if len(requested) > 1:
+        ui.emit(f"Error: conflicting modes requested: {', '.join(sorted(requested))}.", err=True)
+        return 2
+    mode = requested.pop() if requested else "default"
+    plan_mode = mode == "plan"
+    edit_mode = "default" if plan_mode else mode
+
     if args.model:
         config.model = args.model
         config.fast_model = ""  # an explicit --model is used as-is, no routing
@@ -1073,10 +1258,10 @@ def main(argv: list[str] | None = None) -> int:
     client = ollama.Client(host=config.host)
 
     if args.interactive or task is None:
-        run_repl(config, client, plan_mode=args.plan, images=images)
+        run_repl(config, client, plan_mode=plan_mode, images=images, edit_mode=edit_mode)
         return 0
 
-    return run_once(task, config, client, plan_mode=args.plan, images=images)
+    return run_once(task, config, client, plan_mode=plan_mode, images=images, edit_mode=edit_mode)
 
 
 if __name__ == "__main__":

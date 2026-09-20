@@ -102,7 +102,7 @@ def test_cli_flag_overrides_file(tmp_path, monkeypatch):
     _write(tmp_path, 'model = "file-model"\nhost = "http://file:1"\n')
     seen = {}
 
-    def fake_run_once(task, config, client, plan_mode=False, images=None):
+    def fake_run_once(task, config, client, plan_mode=False, images=None, edit_mode="default"):
         seen["model"], seen["host"] = config.model, config.host
         return 0
 
