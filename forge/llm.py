@@ -215,6 +215,7 @@ def _stream_chat(
     messages: list[dict[str, Any]],
     tools: Any,
     on_token: Callable[[str], None],
+    think: bool | None = None,
 ) -> dict[str, Any]:
     """Call `client.chat(stream=True)`, forwarding each content chunk to
     `on_token` as it arrives, and fold the chunks back into the same
@@ -226,7 +227,8 @@ def _stream_chat(
     prompt_tokens = 0
     completion_tokens = 0
 
-    for chunk in client.chat(model=model, messages=messages, tools=tools, stream=True):
+    extra = {} if think is None else {"think": think}
+    for chunk in client.chat(model=model, messages=messages, tools=tools, stream=True, **extra):
         message = chunk.get("message") or {}
         piece = message.get("content") or ""
         if piece:
@@ -263,6 +265,7 @@ def run_task(
     read_only: bool = False,
     on_token: Callable[[str], None] | None = None,
     on_step: Callable[[], None] | None = None,
+    think: bool | None = None,
 ) -> TaskResult:
     """Run one task to completion against `client` (an object exposing a
     `.chat(model=, messages=, tools=)` method — an `ollama.Client` in
@@ -280,6 +283,9 @@ def run_task(
     `on_step`, if given, is called after every model call once its usage is
     recorded (e.g. to check a budget). It must not be able to break the
     task, so anything it raises is ignored.
+
+    `think`, if not None, is passed to Ollama to turn a reasoning model's
+    thinking on or off; None sends nothing and leaves the model's default.
     """
     messages = list(history)
     task_content = (
@@ -292,15 +298,16 @@ def run_task(
     messages.append({"role": "user", "content": task_content})
 
     tools = tool_schemas_for(read_only)
+    extra = {} if think is None else {"think": think}
     last_content = ""
 
     for iteration in range(max_iterations):
         started = time.monotonic()
         try:
             if on_token is not None:
-                response = _stream_chat(client, model, messages, tools, on_token)
+                response = _stream_chat(client, model, messages, tools, on_token, think)
             else:
-                response = client.chat(model=model, messages=messages, tools=tools)
+                response = client.chat(model=model, messages=messages, tools=tools, **extra)
         except (ConnectionError, httpx.TransportError) as e:
             raise OllamaUnreachableError(f"{type(e).__name__}: {e}") from e
         except Exception as e:
