@@ -246,6 +246,24 @@ def _stream_chat(
     }
 
 
+def _approved(approve: Callable[[str, dict[str, Any]], bool], name: str, arguments: dict[str, Any]) -> bool:
+    """Ask the approval hook; a hook that fails counts as a refusal."""
+    try:
+        return bool(approve(name, arguments))
+    except Exception:  # noqa: BLE001 - never let the prompt crash a task
+        return False
+
+
+def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
+    """Call a reporting callback; a display problem must never break a task."""
+    if callback is None:
+        return
+    try:
+        callback(*args)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @dataclass
 class TaskResult:
     content: str
@@ -266,6 +284,9 @@ def run_task(
     on_token: Callable[[str], None] | None = None,
     on_step: Callable[[], None] | None = None,
     think: bool | None = None,
+    approve: Callable[[str, dict[str, Any]], bool] | None = None,
+    on_tool_start: Callable[[str, dict[str, Any]], None] | None = None,
+    on_tool_result: Callable[[str, str], None] | None = None,
 ) -> TaskResult:
     """Run one task to completion against `client` (an object exposing a
     `.chat(model=, messages=, tools=)` method — an `ollama.Client` in
@@ -286,6 +307,15 @@ def run_task(
 
     `think`, if not None, is passed to Ollama to turn a reasoning model's
     thinking on or off; None sends nothing and leaves the model's default.
+
+    `approve`, if given, is called with (tool name, arguments) before each
+    tool runs; returning False (or raising) skips the tool and tells the
+    model the user declined. None runs every tool as before. It is not
+    consulted in read-only mode, where `call_tool` already refuses writes.
+
+    `on_tool_start(name, arguments)` and `on_tool_result(name, result)`, if
+    given, bracket each tool that actually runs (not one that was declined or
+    had unparseable arguments). They only report; anything they raise is ignored.
     """
     messages = list(history)
     task_content = (
@@ -354,10 +384,14 @@ def run_task(
                 arguments, parse_error = _parse_tool_arguments(raw_args)
                 if parse_error is not None:
                     result = f"Error: {parse_error}"
+                elif approve is not None and not read_only and not _approved(approve, name, arguments):
+                    result = "Error: the user declined this action."
                 else:
+                    _notify(on_tool_start, name, arguments)
                     result = call_tool(
                         name, arguments, base_dir, shell_timeout=shell_timeout, read_only=read_only
                     )
+                    _notify(on_tool_result, name, result)
 
             messages.append(
                 {
