@@ -590,6 +590,7 @@ def _chat_reply(message: str) -> str:
                 max_iterations=state.config.max_iterations,
                 usage_file=state.config.usage_file,
                 read_only=state.plan_mode,
+                think=state.config.think_setting,
             )
         except llm.LLMError as e:
             raise RuntimeError(_error_message(e, state.config)) from e
@@ -934,6 +935,7 @@ def run_repl(
                 read_only=state.plan_mode,
                 on_token=printer,
                 on_step=_budget_hook(state.budget, printer),
+                think=state.config.think_setting,
             )
         except llm.LLMError as e:
             printer.finish()
@@ -1027,6 +1029,7 @@ def run_once(
             read_only=plan_mode,
             on_token=printer,
             on_step=_budget_hook(tracker, printer),
+            think=config.think_setting,
         )
     except llm.LLMError as e:
         printer.finish()
