@@ -23,7 +23,7 @@ from typing import Any
 
 import ollama
 
-from . import budget, chatui, gitutil, llm, mcp, plugins, routing, session, tools, ui, undo, vision, voice, webui
+from . import budget, chatui, gitutil, llm, mcp, modes, plugins, routing, session, tools, ui, undo, vision, voice, webui
 from . import __version__
 from .config import Config, ConfigError
 
@@ -31,9 +31,9 @@ HELP_TEXT = """\
 Commands:
   /help            Show this help.
   /clear           Clear the conversation history and saved session (starts fresh).
-  /model <name>    Switch to a different model for subsequent tasks.
   /model           List the models available on the Ollama server.
   /pull <name>     Pull a model via `ollama pull`.
+  /model <name>    Switch to a different model for subsequent tasks.
   /usage           Show this session's + all-time token usage and estimated $ saved.
   /voice           Dictate the next task (needs voice_transcribe; see README).
   /plugins         List loaded plugin tools (custom tools from .forge/plugins).
@@ -46,7 +46,9 @@ Commands:
   /image <path>    Attach image(s) to the next task (screenshot -> code). /image alone lists; /image clear drops them.
   /plan            Enter plan mode: read-only tools only, no edits or shell commands.
   /build           Exit plan mode: full tool access again.
-  /exit, /quit     Exit the REPL.
+  /mode [name]     Show or set the permission mode: default (ask before edits and commands),
+                   auto (edits go through, commands still ask), plan (read-only), dangerous (never ask).
+  /exit, /quit    Exit the REPL.
 Anything else is sent to the model as a task."""
 
 
@@ -74,6 +76,8 @@ class REPLState:
     plan_mode: bool = False
     pending_images: list[str] = field(default_factory=list)
     auto_model: bool = True
+    edit_mode: str = "default"  # default | auto | dangerous (plan is `plan_mode`)
+    always_allowed: set[str] = field(default_factory=set)  # "edits"/"shell" answered "always"
     budget: budget.BudgetTracker = field(default_factory=budget.BudgetTracker)
     last_model: str | None = None  # model used for the previous task
     name: str = "main"
@@ -97,6 +101,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--voice",
+    parser.add_argument(
+        "--mode",
+        choices=modes.MODES,
+        default=None,
+        help="Permission mode: default (ask before edits and commands), auto (edits go through), "
+        "plan (read-only), dangerous (never ask).",
+    )
+    parser.add_argument(
+        "--dangerous-edits",
+        action="store_true",
+        help="Same as --mode dangerous: edits and shell commands run without asking.",
+    )
         action="store_true",
         help="Dictate the task instead of typing it (needs voice_transcribe; see README).",
     )
@@ -253,31 +269,13 @@ def handle_slash_command(line: str, state: REPLState) -> str:
 
     if name == "/help":
         return HELP_TEXT
+    if name == "/mode":
+        return _handle_mode_command(arg_str, state)
+
 
     return f"Unknown command: {name!r} (try /help)"
 
 
-def _handle_image_command(arg_str: str, state: REPLState) -> str:
-    if not arg_str:
-        if not state.pending_images:
-            return "No images attached. Usage: /image <path> [<path> ...]"
-        return "Attached for the next task:\n" + "\n".join(f"  {p}" for p in state.pending_images)
-    if arg_str == "clear":
-        state.pending_images = []
-        return "Attached images cleared."
-
-    try:
-        paths = shlex.split(arg_str)
-    except ValueError as e:
-        return f"Error: could not parse paths: {e}"
-    try:
-        resolved = [vision.resolve_image(p, state.config.working_dir) for p in paths]
-    except vision.VisionError as e:
-        return f"Error: {e}"
-
-    state.pending_images.extend(p for p in resolved if p not in state.pending_images)
-    return (
-        f"{len(state.pending_images)} image(s) attached; they'll be described by "
 def _field(item: Any, key: str) -> Any:
     """A field of an Ollama response item, whether it's a dict or an object."""
     return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
@@ -307,6 +305,43 @@ def _list_models(state: REPLState) -> str:
 
         f"{state.config.vision_model} and sent with your next task."
     )
+def _handle_mode_command(arg_str: str, state: REPLState) -> str:
+    wanted = arg_str.strip().lower()
+    if not wanted:
+        return f"Mode: {modes.label(state.plan_mode, state.edit_mode)} (choose from {', '.join(modes.MODES)})."
+    if wanted not in modes.MODES:
+        return f"Unknown mode {wanted!r}. Choose from {', '.join(modes.MODES)}."
+    if wanted == "plan":
+        state.plan_mode = True
+        return "Mode: plan (read-only tools only). /mode default, /mode auto or /build to leave."
+    state.plan_mode = False
+    state.edit_mode = wanted
+    if wanted == "dangerous":
+        return "Mode: dangerous. Edits and shell commands run WITHOUT asking."
+    return f"Mode: {modes.label(False, wanted)}."
+
+
+def _handle_image_command(arg_str: str, state: REPLState) -> str:
+    if not arg_str:
+        if not state.pending_images:
+            return "No images attached. Usage: /image <path> [<path> ...]"
+        return "Attached for the next task:\n" + "\n".join(f"  {p}" for p in state.pending_images)
+    if arg_str == "clear":
+        state.pending_images = []
+        return "Attached images cleared."
+
+    try:
+        paths = shlex.split(arg_str)
+    except ValueError as e:
+        return f"Error: could not parse paths: {e}"
+    try:
+        resolved = [vision.resolve_image(p, state.config.working_dir) for p in paths]
+    except vision.VisionError as e:
+        return f"Error: {e}"
+
+    state.pending_images.extend(p for p in resolved if p not in state.pending_images)
+    return (
+        f"{len(state.pending_images)} image(s) attached; they'll be described by "
 
 
 def _is_interactive() -> bool:
@@ -928,11 +963,13 @@ def run_repl(
                 continue
             line, dictated = spoken, True
 
+    edit_mode: str = "default",
         # A dictated "slash clear" must run as a task, never as a command.
         if line.startswith("/") and not dictated:
             try:
                 output = handle_slash_command(line, state)
             except REPLExit:
+        edit_mode=edit_mode,
                 return
             ui.emit(output)
             continue
@@ -943,6 +980,8 @@ def run_repl(
             line,
             state.config.model,
             state.config.fast_model if state.auto_model else "",
+    elif state.edit_mode == "dangerous":
+        ui.render_status("Dangerous mode: edits and shell commands run without asking.", err=False)
             images=bool(state.pending_images),
             plan_mode=state.plan_mode,
             last=state.last_model,
@@ -1101,11 +1140,20 @@ def main(argv: list[str] | None = None) -> int:
     client = ollama.Client(host=config.host)
 
     if args.interactive or task is None:
-        run_repl(config, client, plan_mode=args.plan, images=images)
+        run_repl(config, client, plan_mode=plan_mode, images=images, edit_mode=edit_mode)
         return 0
 
-    return run_once(task, config, client, plan_mode=args.plan, images=images)
+    return run_once(task, config, client, plan_mode=plan_mode, images=images, edit_mode=edit_mode)
 
 
 if __name__ == "__main__":
     sys.exit(main())
+    edit_mode: str = "default",
+    requested = {m for m in (args.mode, "plan" if args.plan else None, "dangerous" if args.dangerous_edits else None) if m}
+    if len(requested) > 1:
+        ui.emit(f"Error: conflicting modes requested: {', '.join(sorted(requested))}.", err=True)
+        return 2
+    mode = requested.pop() if requested else "default"
+    plan_mode = mode == "plan"
+    edit_mode = "default" if plan_mode else mode
+
