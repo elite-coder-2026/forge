@@ -17,6 +17,15 @@ STYLES = {
     "status": "dim",
     "warning": "yellow",
     "error": "bold red",
+    "permission.border": "yellow",
+    "permission.title": "bold yellow",
+    "tool.ok": "green",
+    "tool.fail": "red",
+    "tool.name": "bold",
+    "tool.output": "dim",
+    "diff.add": "green",
+    "diff.remove": "red",
+    "diff.hunk": "cyan",
 }
 
 # Syntax theme for fenced code blocks in assistant Markdown.
@@ -40,6 +49,8 @@ PROMPT_STYLES = {
     "completion-menu": "bg:#1c1c1c #bcbcbc",
     "completion-menu.completion": "bg:#1c1c1c #bcbcbc",
     "completion-menu.completion.current": "bg:ansicyan #000000 bold",
+    "completion-menu.meta.completion": "bg:#1c1c1c #808080",
+    "completion-menu.meta.completion.current": "bg:ansicyan #003f4f",
     "scrollbar.background": "bg:#1c1c1c",
     "scrollbar.button": "bg:ansibrightblack",
 }
