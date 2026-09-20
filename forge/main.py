@@ -24,6 +24,7 @@ from typing import Any
 import ollama
 
 from . import budget, chatui, gitutil, llm, mcp, plugins, routing, session, tools, ui, undo, vision, voice, webui
+from . import __version__
 from .config import Config, ConfigError
 
 HELP_TEXT = """\
@@ -619,13 +620,16 @@ def _voice_task(config: Config, confirm: bool = True) -> str | None:
     mishears, and a wrong task can change files.
     """
     limit = max(1, config.voice_seconds)
+    heard: list[str] = []
     try:
-        text = voice.listen(
+        voice.VoiceInput(
             config.voice_record,
             config.voice_transcribe,
             limit,
+            heard.append,
             on_status=lambda message: ui.emit(message, flush=True),
-        )
+        ).start()
+        text = heard[0]
     except voice.VoiceError as e:
         ui.emit(f"Error: {e}", err=True)
         return None
@@ -828,24 +832,20 @@ class _LivePrinter:
 
     def __init__(self) -> None:
         self.streamed = False
-        self._mid_line = False
+        self._stream = ui.AssistantStream()
 
     def __call__(self, token: str) -> None:
         self.streamed = True
-        self._mid_line = not token.endswith("\n")
-        ui.emit(token, end="", flush=True)
+        self._stream.write(token)
 
     def notice(self, text: str) -> None:
         """A warning on stderr that never lands in the middle of a streamed line."""
-        if self._mid_line:
-            ui.emit(flush=True)
-            self._mid_line = False
+        self._stream.pause()
         ui.emit(f"[budget] {text}", err=True, flush=True)
 
     def finish(self, fallback: str = "") -> None:
         if self.streamed:
-            if self._mid_line:
-                ui.emit()
+            self._stream.close()
         elif fallback:
             ui.emit(fallback)
 
@@ -867,7 +867,7 @@ def run_repl(
     state.workspace = workspace
     global _web_workspace
     _web_workspace = workspace
-    ui.emit(f"forge REPL — model: {config.model}. Type /help for commands, /exit to quit.")
+    ui.render_banner(__version__, config.model, config.working_dir)
     if state.plan_mode:
         ui.emit("Starting in plan mode (read-only). /build to exit.")
     if state.pending_images:
@@ -960,38 +960,27 @@ HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".forge", "history")
 def _make_prompt_session(workspace: Workspace) -> Any:
     """A prompt_toolkit session (history, `/` completion, status toolbar), or
     None when stdin/stdout aren't a terminal so plain `input()` is used."""
-    if not _is_interactive():
-        return None
-    try:
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import WordCompleter
-        from prompt_toolkit.history import FileHistory
-        from prompt_toolkit.styles import Style
-    except ImportError:
-        return None
-
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-
-    def toolbar() -> str:
+    def status() -> str:
         state = workspace.state
         tokens, seconds = _session_totals()
         mode = "plan (read-only)" if state.plan_mode else "build"
-        return f" {state.config.model} | {mode} | {tokens:,} tokens | {seconds / 60:.1f} min "
+        return (
+            f"{state.config.model} · {mode} · {os.path.basename(state.config.working_dir) or '/'}"
+            f" · voice {_voice_state(state.config)} · {tokens:,} tokens · {seconds / 60:.1f} min"
+        )
 
-    return PromptSession(
-        history=FileHistory(HISTORY_FILE),
-        completer=WordCompleter(SLASH_COMMANDS, sentence=True),
-        complete_while_typing=True,
-        bottom_toolbar=toolbar,
-        style=Style.from_dict({"prompt": "ansicyan bold", "bottom-toolbar": "reverse"}),
-    )
+    return ui.make_input(SLASH_COMMANDS, HISTORY_FILE, status)
+
+
+def _voice_state(config: Config) -> str:
+    """"on" when dictation could run (a recorder and a transcriber exist)."""
+    recorder = config.voice_record.strip() or voice.find_recorder()
+    transcriber = config.voice_transcribe.strip() or voice.builtin_available()
+    return "on" if recorder and transcriber else "off"
 
 
 def _read_line(prompt_session: Any, state: REPLState) -> str:
-    text = _repl_prompt(state)
-    if prompt_session is None:
-        return ui.ask(text)
-    return prompt_session.prompt([("class:prompt", text)])
+    return ui.read_input(prompt_session, _repl_prompt(state))
 
 
 def _repl_prompt(state: REPLState) -> str:
