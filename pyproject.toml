@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.0",
     "pyright",
     "mcp",  # a real server for the MCP integration test (skipped if absent)
+    "watchfiles",  # scripts/dev.sh: restart forge when a source file changes
 ]
 lsp = [
     "pyright",
