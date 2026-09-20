@@ -32,6 +32,7 @@ Commands:
   /help            Show this help.
   /clear           Clear the conversation history and saved session (starts fresh).
   /model <name>    Switch to a different model for subsequent tasks.
+  /model           List the models available on the Ollama server.
   /pull <name>     Pull a model via `ollama pull`.
   /usage           Show this session's + all-time token usage and estimated $ saved.
   /voice           Dictate the next task (needs voice_transcribe; see README).
@@ -188,7 +189,7 @@ def handle_slash_command(line: str, state: REPLState) -> str:
 
     if name == "/model":
         if not arg_str:
-            return "Usage: /model <name>"
+            return _list_models(state)
         state.config.model = arg_str
         message = f"Model set to {arg_str!r}"
         if state.config.fast_model and state.auto_model:
@@ -277,6 +278,33 @@ def _handle_image_command(arg_str: str, state: REPLState) -> str:
     state.pending_images.extend(p for p in resolved if p not in state.pending_images)
     return (
         f"{len(state.pending_images)} image(s) attached; they'll be described by "
+def _field(item: Any, key: str) -> Any:
+    """A field of an Ollama response item, whether it's a dict or an object."""
+    return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+
+
+def _installed_models(client: Any) -> list[tuple[str, Any]]:
+    """(name, size) for each model on the Ollama server, sorted by name."""
+    found = _field(client.list(), "models") or []
+    return sorted((_field(m, "model") or _field(m, "name") or "?", _field(m, "size")) for m in found)
+
+
+def _list_models(state: REPLState) -> str:
+    """The models the Ollama server has, with the current one marked."""
+    try:
+        rows = _installed_models(state.client)
+    except Exception as e:  # noqa: BLE001 - the server may be down; say so, don't crash
+        return f"Could not list models: {type(e).__name__}: {e}\nUsage: /model <name>"
+    if not rows:
+        return "No models found. /pull <name> to download one."
+    lines = ["Available models (* = current):"]
+    for name, size in rows:
+        mark = "*" if name == state.config.model else " "
+        lines.append(f"  {mark} {name}" + (f"  ({size / 1e9:.1f} GB)" if size else ""))
+    lines.append("/model <name> to switch, /pull <name> to download another.")
+    return "\n".join(lines)
+
+
         f"{state.config.vision_model} and sent with your next task."
     )
 
